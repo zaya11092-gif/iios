@@ -105,15 +105,17 @@ struct SceneVertexOut {
     float3 worldPos;
 };
 
-// NOTE: attribute buffers must use float3, not packed_float3 — the vertex
-// descriptor (float3 @0, float3 @12, stride 24) makes Metal fetch the packed
-// interleaved layout correctly.
-vertex SceneVertexOut sceneVertex(const device float3 *positions [[attribute(0)]],
-                                  const device float3 *normals   [[attribute(1)]],
-                                  uint vid [[vertex_id]],
+// Vertex input consumed via [[stage_in]] — the pipeline's MTLVertexDescriptor
+// (float3 pos @0, float3 normal @12, stride 24) matches the MTKMesh layout.
+struct SceneVertexIn {
+    float3 position [[attribute(0)]];
+    float3 normal   [[attribute(1)]];
+};
+
+vertex SceneVertexOut sceneVertex(SceneVertexIn in [[stage_in]],
                                   constant ItemUniforms &u [[buffer(1)]]) {
-    float3 p = float3(positions[vid]);
-    float3 n = float3(normals[vid]);
+    float3 p = in.position;
+    float3 n = in.normal;
     SceneVertexOut o;
     float4 wp = u.model * float4(p, 1.0);
     o.worldPos = wp.xyz;
