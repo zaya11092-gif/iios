@@ -285,7 +285,7 @@ final class Compositor {
                 enc.setRenderPipelineState(scenePipeline)
                 enc.setDepthStencilState(depthState)
                 enc.setCullMode(MTLCullMode.back)
-                enc.setFrontFacing(MTLFrontFacingWinding.counterClockwise)
+                enc.setFrontFacing(MTLWinding.counterClockwise)
                 for item in items {
                     var vu = ItemUniforms(mvp: proj * viewM * item.model, model: item.model)
                     var fu = ItemFragUniforms(color: item.color, lightDir: lightDir,

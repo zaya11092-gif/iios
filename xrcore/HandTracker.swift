@@ -105,8 +105,9 @@ final class HandTracker {
 
         // Visual handedness: rear camera is not mirrored, so physical left
         // appears on the buffer's left. Sort observations by wrist buffer-x.
+        // Joint keys are VNRecognizedPointKey constants (wrist, thumbTip, ...).
         struct HandObs {
-            var joints: [VNHumanHandPoseObservation.JointName: VNRecognizedPoint] // top-left norm in buffer space
+            var joints: [VNRecognizedPointKey: VNRecognizedPoint] // top-left norm in buffer space
             var centroidX: Float
             var confidence: Float
         }
@@ -141,7 +142,7 @@ final class HandTracker {
 
         var hands: [HandObs] = []
         for obs in observations {
-            guard obs.confidence > 0.2, let jointsRaw = try? obs.joints(forJointGroup: .all) else { continue }
+            guard obs.confidence > 0.2, let jointsRaw = try? obs.recognizedPoints(.all) else { continue }
             var joints: [VNHumanHandPoseObservation.JointName: VNRecognizedPoint] = [:]
             var sumX: Float = 0
             var count = 0
@@ -194,13 +195,13 @@ final class HandTracker {
             }
 
             let j = obs.joints
-            func bn(_ name: VNHumanHandPoseObservation.JointName) -> SIMD2<Float> {
+            func bn(_ name: VNRecognizedPointKey) -> SIMD2<Float> {
                 j[name].map { toBufferNorm($0.location) } ?? SIMD2<Float>(0, 0)
             }
-            func px(_ name: VNHumanHandPoseObservation.JointName) -> SIMD2<Float> {
+            func px(_ name: VNRecognizedPointKey) -> SIMD2<Float> {
                 bn(name) * SIMD2<Float>(Float(res.width), Float(res.height))
             }
-            func dir(_ name: VNHumanHandPoseObservation.JointName) -> SIMD3<Float> {
+            func dir(_ name: VNRecognizedPointKey) -> SIMD3<Float> {
                 rayDir(bn(name))
             }
 
