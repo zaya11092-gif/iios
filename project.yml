@@ -1,0 +1,53 @@
+name: iios
+options:
+  bundleIdPrefix: dev.iios
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: ""
+    DEVELOPMENT_TEAM: ""
+    ENABLE_BITCODE: NO
+    # Bridging header exposes the stable xrc C ABI (xrcore/include/xrc.h) to all Swift code.
+    SWIFT_OBJC_BRIDGING_HEADER: app/iios-Bridging-Header.h
+    # FEX (Phase 3) requires JIT; keep the setting harmless until then.
+    OTHER_LDFLAGS: ""
+
+targets:
+  iios:
+    type: application
+    platform: iOS
+    sources:
+      - path: app
+      - path: xrcore
+      - path: demo-game
+    info:
+      path: app/Info.plist
+      properties:
+        CFBundleDisplayName: iios
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        NSCameraUsageDescription: "iios uses the camera for real-time passthrough, spatial tracking (SLAM), and hand tracking."
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiresFullScreen: true
+        CADisableMinimumFrameDurationOnPhone: true
+        UIStatusBarHidden: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.iios.app
+        TARGETED_DEVICE_FAMILY: "1"
+        INFOPLIST_KEY_UIRequiresFullScreen: true
+
+schemes:
+  iios:
+    build:
+      targets:
+        iios: all
+    run:
+      config: Debug

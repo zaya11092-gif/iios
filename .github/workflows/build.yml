@@ -1,0 +1,48 @@
+name: build-ipa
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build archive (unsigned)
+        run: |
+          xcodebuild \
+            -project iios.xcodeproj \
+            -scheme iios \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/iios.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS=""
+
+      - name: Package unsigned .ipa
+        run: |
+          APP=$(find build -path '*Build/Products/Release-iphoneos/*.app' | head -1)
+          echo "Found app bundle: $APP"
+          rm -rf Payload
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry iios-unsigned.ipa Payload
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iios-unsigned-ipa
+          path: iios-unsigned.ipa
+          retention-days: 30
