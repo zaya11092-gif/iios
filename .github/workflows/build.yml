@@ -18,6 +18,21 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      # Debug uses singlefile compilation, which always prints full per-file
+      # diagnostics; Release/WMO can swallow error text entirely. This step
+      # gives readable compile errors before the archive step runs.
+      - name: Compile check (Debug)
+        run: |
+          xcodebuild \
+            -project iios.xcodeproj \
+            -scheme iios \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS=""
+
       - name: Build archive (unsigned)
         run: |
           xcodebuild \
