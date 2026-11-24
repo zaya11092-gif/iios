@@ -38,11 +38,10 @@ enum XRCMath {
         let right = normalize(cross(up, f))
         let up2 = cross(f, right)
         // Column-major basis: X=right, Y=up2, Z=-f (camera-style -Z forward)
-        let m = simd_float4x4(columns:
-            simd_float4(right.x, right.y, right.z, 0),
-            simd_float4(up2.x, up2.y, up2.z, 0),
-            simd_float4(-f.x, -f.y, -f.z, 0),
-            simd_float4(0, 0, 0, 1))
+        let m = simd_float4x4(simd_float4(right.x, right.y, right.z, 0),
+                              simd_float4(up2.x, up2.y, up2.z, 0),
+                              simd_float4(-f.x, -f.y, -f.z, 0),
+                              simd_float4(0, 0, 0, 1))
         return simd_quatf(m)
     }
 
@@ -59,19 +58,19 @@ enum XRCMath {
     /// Writes a simd_float4x4 as 16 column-major floats (xrc_mat4 layout).
     static func write(_ m: simd_float4x4, into out: UnsafeMutablePointer<Float>) {
         for c in 0..<4 {
+            let col = m[c]
             for r in 0..<4 {
-                out[c * 4 + r] = m.columns[c][r]
+                out[c * 4 + r] = col[r]
             }
         }
     }
 
     /// Reads 16 column-major floats into a simd matrix.
     static func read(_ src: UnsafePointer<Float>) -> simd_float4x4 {
-        var m = matrix_identity_float4x4
-        for c in 0..<4 {
-            m.columns[c] = simd_float4(src[c * 4], src[c * 4 + 1], src[c * 4 + 2], src[c * 4 + 3])
+        func col(_ c: Int) -> simd_float4 {
+            simd_float4(src[c * 4], src[c * 4 + 1], src[c * 4 + 2], src[c * 4 + 3])
         }
-        return m
+        return simd_float4x4(col(0), col(1), col(2), col(3))
     }
 
     /// simd matrix -> 16-float column-major array for xrc_* C calls.

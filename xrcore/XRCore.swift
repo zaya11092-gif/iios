@@ -301,8 +301,8 @@ extension XRCore: MTKViewDelegate {
         sceneEnd()
 
         // --- pause gesture: both triggers held (debounced) ---
-        let l = handTracker.snapshot(for: XRC_HAND_LEFT)
-        let r = handTracker.snapshot(for: XRC_HAND_RIGHT)
+        let l = handTracker.snapshot(for: Int32(XRC_HAND_LEFT))
+        let r = handTracker.snapshot(for: Int32(XRC_HAND_RIGHT))
         let bothTriggers = l.buttons & UInt32(XRC_BTN_TRIGGER) != 0 && r.buttons & UInt32(XRC_BTN_TRIGGER) != 0
         let now = CACurrentMediaTime()
         if bothTriggers, now - lastPauseToggle > 0.8 {

@@ -100,15 +100,12 @@ final class Compositor {
         sc.colorAttachments[0].pixelFormat = .bgra8Unorm
         sc.depthAttachmentPixelFormat = .depth32Float
         let vdesc = MTLVertexDescriptor()
-        vdesc.attributes[0] = MTLVertexAttribute()
         vdesc.attributes[0].format = .float3
         vdesc.attributes[0].offset = 0
         vdesc.attributes[0].bufferIndex = 0
-        vdesc.attributes[1] = MTLVertexAttribute()
         vdesc.attributes[1].format = .float3
         vdesc.attributes[1].offset = 12
         vdesc.attributes[1].bufferIndex = 0
-        vdesc.layouts[0] = MTLVertexBufferLayoutDescriptor()
         vdesc.layouts[0].stride = 24
         vdesc.layouts[0].stepRate = 1
         vdesc.layouts[0].stepFunction = .perVertex
@@ -266,7 +263,7 @@ final class Compositor {
         let lightDir = SIMD4<Float>(normalize(SIMD3<Float>(0.3, 1.0, -0.4)), 0)
 
         // --- pass 1 + 2 per eye ---
-        for (eye, sceneTex, depthTex) in [(0, sceneTexL, depthTexL), (1, sceneTexR, depthTexR)] {
+        for (eye, sceneTex, depthTex) in [(0, sceneTexL!, depthTexL!), (1, sceneTexR!, depthTexR!)] {
             let eyePose = eye == 0 ? poseL : poseR
             let viewM = eyePose.inverse
 
@@ -279,7 +276,7 @@ final class Compositor {
                 enc.setFragmentBuffer(jointsBuffer, offset: 0, index: 1)
                 enc.setFragmentBytes(&jointCount, length: MemoryLayout<UInt32>.size, index: 2)
                 enc.setFragmentBytes(&ja, length: MemoryLayout<Float>.size, index: 3)
-                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+                enc.drawPrimitives(type: MTLPrimitiveType.triangle, vertexStart: 0, vertexCount: 6)
                 enc.endEncoding()
             }
 
@@ -287,8 +284,8 @@ final class Compositor {
             if let enc = cmd.makeRenderCommandEncoder(descriptor: passDesc(target: sceneTex, load: .load, depth: depthTex)) {
                 enc.setRenderPipelineState(scenePipeline)
                 enc.setDepthStencilState(depthState)
-                enc.setCullMode(.back)
-                enc.setFrontFacing(.counterClockwise)
+                enc.setCullMode(MTLCullMode.back)
+                enc.setFrontFacing(MTLFrontFacingWinding.counterClockwise)
                 for item in items {
                     var vu = ItemUniforms(mvp: proj * viewM * item.model, model: item.model)
                     var fu = ItemFragUniforms(color: item.color, lightDir: lightDir,
@@ -299,10 +296,10 @@ final class Compositor {
                     enc.setVertexBytes(&vu, length: MemoryLayout<ItemUniforms>.size, index: 1)
                     enc.setFragmentBytes(&fu, length: MemoryLayout<ItemFragUniforms>.size, index: 0)
                     if mesh.indexCount > 0, let ib = mesh.indexBuffer {
-                        enc.drawIndexedPrimitives(type: .triangle, indexCount: mesh.indexCount,
+                        enc.drawIndexedPrimitives(type: MTLPrimitiveType.triangle, indexCount: mesh.indexCount,
                                                   indexType: mesh.indexType, indexBuffer: ib, indexBufferOffset: 0)
                     } else {
-                        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: mesh.vertexCount)
+                        enc.drawPrimitives(type: MTLPrimitiveType.triangle, vertexStart: 0, vertexCount: mesh.vertexCount)
                     }
                 }
                 enc.endEncoding()
@@ -313,14 +310,14 @@ final class Compositor {
         if let enc = cmd.makeRenderCommandEncoder(descriptor: passDesc(target: drawable.texture, load: .clear)) {
             enc.setRenderPipelineState(distortPipeline)
             enc.setVertexBytes(&du, length: MemoryLayout<DistortionUniforms>.size, index: 0)
-            enc.setFragmentTexture(sceneTexL, index: 0)
-            enc.setFragmentTexture(sceneTexR, index: 1)
-            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: gridCols * gridRows * 6 * 2)
+            enc.setFragmentTexture(sceneTexL!, index: 0)
+            enc.setFragmentTexture(sceneTexR!, index: 1)
+            enc.drawPrimitives(type: MTLPrimitiveType.triangle, vertexStart: 0, vertexCount: gridCols * gridRows * 6 * 2)
             enc.endEncoding()
         }
 
-        cmd.presentDrawable(drawable)
-        cmd.addCompletionHandler { [weak self] _ in
+        cmd.present(drawable)
+        cmd.addCompletedHandler { [weak self] _ in
             self?.frameCVTextures.removeAll()
         }
         cmd.commit()

@@ -141,7 +141,7 @@ final class HandTracker {
 
         var hands: [HandObs] = []
         for obs in observations {
-            guard obs.confidence > 0.2, let jointsRaw = try? obs.joints(for: .all) else { continue }
+            guard obs.confidence > 0.2, let jointsRaw = try? obs.joints(forJointGroup: .all) else { continue }
             var joints: [VNHumanHandPoseObservation.JointName: VNRecognizedPoint] = [:]
             var sumX: Float = 0
             var count = 0

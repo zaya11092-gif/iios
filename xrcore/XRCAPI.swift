@@ -5,12 +5,30 @@ import simd
 // Exported with @_cdecl so the symbols exist with exact C names — the demo
 // game consumes the API through the bridging header exactly like a foreign
 // client (the Phase 3 OpenXR shim) will.
+//
+// Import notes: named C enums (xrc_result) import as RawRepresentable structs
+// (convert with .rawValue); anonymous enum constants import as Int globals;
+// C struct array members import as tuples (never subscript .m directly).
+
+private func xrcResult(_ r: xrc_result) -> Int32 {
+    Int32(r.rawValue)
+}
+
+private func xrcMat4(_ m: simd_float4x4) -> xrc_mat4 {
+    var a = [Float](repeating: 0, count: 16)
+    for c in 0..<4 {
+        let col = m[c]
+        for r in 0..<4 { a[c * 4 + r] = col[r] }
+    }
+    return xrc_mat4(m: (a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7],
+                        a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15]))
+}
 
 @_cdecl("xrc_start")
 public func xrc_impl_start() -> Int32 {
-    guard let view = XRCore.shared.attachedView else { return Int32(XRC_ERR_NOT_READY) }
+    guard let view = XRCore.shared.attachedView else { return xrcResult(XRC_ERR_NOT_READY) }
     XRCore.shared.beginSession(view: view)
-    return Int32(XRC_OK)
+    return xrcResult(XRC_OK)
 }
 
 @_cdecl("xrc_stop")
@@ -35,43 +53,34 @@ public func xrc_impl_is_paused() -> Int32 {
 
 @_cdecl("xrc_get_head_pose")
 public func xrc_impl_get_head_pose(_ predicted_time_s: Double, _ out_pose: UnsafeMutablePointer<xrc_pose>!) -> Int32 {
-    guard let pose = XRCore.shared.headPose() else { return Int32(XRC_ERR_NOT_READY) }
+    guard let pose = XRCore.shared.headPose() else { return xrcResult(XRC_ERR_NOT_READY) }
     let q = simd_quatf(pose)
     out_pose.pointee = XRCMath.toXrc(position: pose.columns.3.xyz, orientation: q)
-    return Int32(XRC_OK)
+    return xrcResult(XRC_OK)
 }
 
 @_cdecl("xrc_get_projection")
 public func xrc_impl_get_projection(_ eye: Int32, _ near_z: Float, _ far_z: Float,
                                     _ out: UnsafeMutablePointer<xrc_mat4>!) -> Int32 {
-    guard XRCore.shared.running else { return Int32(XRC_ERR_NOT_READY) }
+    guard XRCore.shared.running else { return xrcResult(XRC_ERR_NOT_READY) }
     let m = XRCore.shared.compositor.projection(eye: Int(eye), nearZ: near_z, farZ: far_z)
-    withUnsafePointer(to: m) { ptr in
-        // simd_float4x4 is column-major; reinterpret as 16 floats.
-        ptr.withMemoryRebound(to: Float.self, capacity: 16) { floatPtr in
-            for i in 0..<16 { out.pointee.m[i] = floatPtr[i] }
-        }
-    }
-    return Int32(XRC_OK)
+    out.pointee = xrcMat4(m)
+    return xrcResult(XRC_OK)
 }
 
 @_cdecl("xrc_get_space_from_head")
 public func xrc_impl_get_space_from_head(_ space: Int32, _ predicted_time_s: Double,
                                          _ out: UnsafeMutablePointer<xrc_mat4>!) -> Int32 {
-    guard let pose = XRCore.shared.headPose() else { return Int32(XRC_ERR_NOT_READY) }
-    withUnsafePointer(to: pose) { ptr in
-        ptr.withMemoryRebound(to: Float.self, capacity: 16) { floatPtr in
-            for i in 0..<16 { out.pointee.m[i] = floatPtr[i] }
-        }
-    }
-    return Int32(XRC_OK)
+    guard let pose = XRCore.shared.headPose() else { return xrcResult(XRC_ERR_NOT_READY) }
+    out.pointee = xrcMat4(pose)
+    return xrcResult(XRC_OK)
 }
 
 @_cdecl("xrc_get_controller")
 public func xrc_impl_get_controller(_ hand: Int32, _ out: UnsafeMutablePointer<xrc_controller_state>!) -> Int32 {
     let idx = Int(hand)
-    guard idx >= 0 && idx < XRC_HAND_COUNT else { return Int32(XRC_ERR_INVALID) }
-    let snap = XRCore.shared.handTracker.snapshot(for: idx)
+    guard idx >= 0 && idx < Int(XRC_HAND_COUNT) else { return xrcResult(XRC_ERR_INVALID) }
+    let snap = XRCore.shared.handTracker.snapshot(for: Int32(idx))
     let forward = -(snap.pose.columns.2.xyz)
     let q = XRCMath.quatLooking(direction: forward)
     out.pointee = xrc_controller_state(
@@ -84,7 +93,7 @@ public func xrc_impl_get_controller(_ hand: Int32, _ out: UnsafeMutablePointer<x
         hand_scale: snap.handScale,
         is_tracked: snap.isTracked ? 1 : 0,
         reserved: (0, 0, 0))
-    return Int32(XRC_OK)
+    return xrcResult(XRC_OK)
 }
 
 @_cdecl("xrc_set_mode")
