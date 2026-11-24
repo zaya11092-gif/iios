@@ -105,8 +105,11 @@ struct SceneVertexOut {
     float3 worldPos;
 };
 
-vertex SceneVertexOut sceneVertex(const device packed_float3 *positions [[attribute(0)]],
-                                  const device packed_float3 *normals   [[attribute(1)]],
+// NOTE: attribute buffers must use float3, not packed_float3 — the vertex
+// descriptor (float3 @0, float3 @12, stride 24) makes Metal fetch the packed
+// interleaved layout correctly.
+vertex SceneVertexOut sceneVertex(const device float3 *positions [[attribute(0)]],
+                                  const device float3 *normals   [[attribute(1)]],
                                   uint vid [[vertex_id]],
                                   constant ItemUniforms &u [[buffer(1)]]) {
     float3 p = float3(positions[vid]);
