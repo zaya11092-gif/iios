@@ -33,6 +33,9 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS=""
 
+      # Xcode 16.4's Swift performance inliner crashes (-O WMO) on this code
+      # (SILPerformanceInliner/getFieldIndex segfault). -Osize + singlefile
+      # takes a different optimizer path and produces the archive.
       - name: Build archive (unsigned)
         run: |
           xcodebuild \
@@ -44,7 +47,9 @@ jobs:
             archive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_ENTITLEMENTS=""
+            CODE_SIGN_ENTITLEMENTS="" \
+            SWIFT_OPTIMIZATION_LEVEL='-Osize' \
+            SWIFT_COMPILATION_MODE=singlefile
 
       - name: Package unsigned .ipa
         run: |
