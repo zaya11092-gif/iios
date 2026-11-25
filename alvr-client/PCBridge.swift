@@ -97,11 +97,12 @@ final class PCBridge {
     }
 
     private func sendHello() {
-        var d = Data([0x49, 0x49, 0x4F, 0x53, 0x01]) // IIOS + hello
-        d.append(UInt16(1).littleEndianData)
-        d.append(Array("iios iphone".utf8))
-        d.append(UInt8(0))
-        send(d)
+        var bytes: [UInt8] = [0x49, 0x49, 0x4F, 0x53, 0x01] // IIOS + hello
+        let v = UInt16(1).littleEndian
+        bytes.append(contentsOf: [UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF)])
+        bytes.append(contentsOf: Array("iios iphone".utf8))
+        bytes.append(0)
+        send(Data(bytes))
     }
 
     private func startPoseLoop() {
@@ -130,13 +131,13 @@ final class PCBridge {
         }
         let triggerBits: [UInt8] = [ctrlButtonBits(hand: 0), ctrlButtonBits(hand: 1)]
 
-        var d = Data([0x49, 0x49, 0x4F, 0x53, 0x02])
+        var bytes: [UInt8] = [0x49, 0x49, 0x4F, 0x53, 0x02]
         for f in floats {
             var v = f.bitPattern.littleEndian
-            withUnsafeBytes(of: &v) { d.append(contentsOf: $0) }
+            withUnsafeBytes(of: &v) { bytes.append(contentsOf: $0) }
         }
-        d.append(contentsOf: triggerBits)
-        send(d)
+        bytes.append(contentsOf: triggerBits)
+        send(Data(bytes))
     }
 
     private func ctrlButtonBits(hand: Int) -> UInt8 {
@@ -187,18 +188,5 @@ final class PCBridge {
 
     private func setStatus(_ s: Status) {
         lock.withLock { _status = s }
-    }
-}
-
-extension UInt16 {
-    var littleEndianData: Data {
-        withUnsafeBytes(of: littleEndian) { Data($0) }
-    }
-}
-
-extension Float {
-    var littleEndianData: Data {
-        var v = bitPattern.littleEndian
-        return withUnsafeBytes(of: &v) { Data($0) }
     }
 }
