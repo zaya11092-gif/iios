@@ -79,9 +79,12 @@ jobs:
         run: |
           TAG="dev-build"
           gh release delete "$TAG" --yes --cleanup-tag || true
+          {
+            echo "Unsigned .ipa from commit ${{ github.sha }} on $(date -u +'%Y-%m-%d %H:%M UTC')."
+            echo ""
+            echo "Sign and sideload per docs/SIDELOADING.md."
+          } > release-notes.md
           gh release create "$TAG" iios-unsigned.ipa \
             --title "Dev build (${{ github.sha }})" \
-            --notes "Unsigned .ipa from commit ${{ github.sha }} on $(date -u +'%Y-%m-%d %H:%M UTC').
-
-Sign and sideload per docs/SIDELOADING.md." \
+            --notes-file release-notes.md \
             --prerelease
