@@ -424,9 +424,11 @@ final class XRHome: ObservableObject {
             let (pos, facing, half) = layout == .panel
                 ? panelButtonTransform(i, buttons: buttons)
                 : barButtonTransform(i)
-            let d = dot(normalize(facing), dir)
+            // facing is a quaternion; the button's plane normal is its +Z axis.
+            let normal = simd_act(facing, SIMD3<Float>(0, 0, 1))
+            let d = dot(normal, dir)
             guard abs(d) > 1e-4 else { continue }
-            let t = dot(normalize(facing), pos - origin) / d
+            let t = dot(normal, pos - origin) / d
             guard t > 0.05, t < 2.0 else { continue }
             let hit = origin + dir * t
             let local = hit - pos
