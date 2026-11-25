@@ -355,8 +355,9 @@ final class XRHome: ObservableObject {
         if simd_length(fwd) < 0.05 { fwd = SIMD3<Float>(0, 0, -1) }
         fwd = normalize(fwd)
         let floor = core.floorY ?? (head.y - 1.4)
-        let target = head + fwd * 0.62 + SIMD3<Float>(0, max(floor + 0.9, head.y - 0.18) - head.y, 0)
-        let targetY = max(floor + 0.9, head.y - 0.18)
+        let desiredY = max(floor + 0.9, head.y - 0.18)
+        let target = SIMD3<Float>(head.x + fwd.x * 0.62, desiredY, head.z + fwd.z * 0.62)
+        let targetY = desiredY
 
         // lazy follow (position ease + yaw slerp)
         let alpha = Float(min(1, dt * 9))
@@ -368,8 +369,8 @@ final class XRHome: ObservableObject {
         let cell: Float = 0.145
         let size: Float = 0.13
         let cols = 3
-        let right = panelFacing * SIMD3<Float>(1, 0, 0)
-        let up = panelFacing * SIMD3<Float>(0, 1, 0)
+        let right = simd_act(panelFacing, SIMD3<Float>(1, 0, 0))
+        let up = simd_act(panelFacing, SIMD3<Float>(0, 1, 0))
         for (i, b) in panelButtons.enumerated() {
             let row = i / cols
             let col = i % cols
@@ -444,7 +445,8 @@ final class XRHome: ObservableObject {
         let col = i % cols
         let rx = (Float(col) - Float(cols - 1) * 0.5) * cell
         let ry = (Float(buttons.count / cols) * 0.5 - Float(row) - 0.5) * cell
-        let pos = panelPos + (panelFacing * SIMD3<Float>(1, 0, 0)) * rx + (panelFacing * SIMD3<Float>(0, 1, 0)) * ry
+        let pos = panelPos + simd_act(panelFacing, SIMD3<Float>(1, 0, 0)) * rx
+                + simd_act(panelFacing, SIMD3<Float>(0, 1, 0)) * ry
         return (pos, panelFacing, 0.065)
     }
 
