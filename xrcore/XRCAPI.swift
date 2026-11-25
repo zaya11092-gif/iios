@@ -119,12 +119,19 @@ public func xrc_impl_scene_begin() {
 
 @_cdecl("xrc_scene_push_box")
 public func xrc_impl_scene_push_box(_ model_col_major: UnsafePointer<Float>!, _ r: Float, _ g: Float, _ b: Float, _ a: Float) {
-    XRCore.shared.scenePush(kind: .box, model: XRCMath.read(model_col_major), color: SIMD4<Float>(r, g, b, a))
+    XRCore.shared.scenePush(kind: .box, model: XRCMath.read(model_col_major), color: SIMD4<Float>(r, g, b, a), texIndex: 0)
 }
 
 @_cdecl("xrc_scene_push_sphere")
 public func xrc_impl_scene_push_sphere(_ model_col_major: UnsafePointer<Float>!, _ r: Float, _ g: Float, _ b: Float, _ a: Float) {
-    XRCore.shared.scenePush(kind: .sphere, model: XRCMath.read(model_col_major), color: SIMD4<Float>(r, g, b, a))
+    XRCore.shared.scenePush(kind: .sphere, model: XRCMath.read(model_col_major), color: SIMD4<Float>(r, g, b, a), texIndex: 0)
+}
+
+@_cdecl("xrc_scene_push_panel")
+public func xrc_impl_scene_push_panel(_ model_col_major: UnsafePointer<Float>!, _ texture_id: Int32, _ glow: Float,
+                                      _ r: Float, _ g: Float, _ b: Float, _ a: Float) {
+    XRCore.shared.scenePush(kind: .panel, model: XRCMath.read(model_col_major),
+                            color: SIMD4<Float>(r, g, b, a), texIndex: texture_id, glow: glow)
 }
 
 @_cdecl("xrc_scene_end")

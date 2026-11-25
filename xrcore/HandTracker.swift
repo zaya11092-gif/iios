@@ -24,6 +24,9 @@ final class HandTracker {
 
     private let handQueue = DispatchQueue(label: "dev.iios.handtracking", qos: .userInteractive)
     private let lock = NSLock()
+    // Coalescing flag: only one Vision pass may be in flight at a time.
+    private let busyLock = NSLock()
+    private var busyFlag = false
 
     private var snapshots: [ControllerSnapshot] = [ControllerSnapshot(), ControllerSnapshot()]
     private var debugPoints: [SIMD2<Float>] = []
@@ -53,8 +56,32 @@ final class HandTracker {
     /// Called from the ARSession delegate; hops to the hand queue and returns
     /// immediately. `completion` (timestamp seconds, latency seconds) reports
     /// throughput for the stats HUD.
+    ///
+    /// CRITICAL: submissions are coalesced — if the previous Vision pass is
+    /// still running, the frame is dropped. Without this, a 20ms Vision pass
+    /// at 60fps ARKit arrival grows the queue without bound (the source of a
+    /// memory-exhaustion crash). Vision also runs at half the AR rate.
+    private var visionFrameCounter = 0
+
     func process(frame: ARFrame, settings: XRSettings, completion: @escaping (Double, Double) -> Void) {
+        // Half rate: hand pose at ~30 Hz is plenty (and saves thermal budget).
+        visionFrameCounter &+= 1
+        if visionFrameCounter % 2 == 0 { return }
+
+        busyLock.lock()
+        if busyFlag {
+            busyLock.unlock()
+            return // previous Vision pass still running -> drop this frame
+        }
+        busyFlag = true
+        busyLock.unlock()
+
         handQueue.async { [weak self] in
+            defer {
+                self?.busyLock.lock()
+                self?.busyFlag = false
+                self?.busyLock.unlock()
+            }
             guard let self = self else { return }
             let start = CACurrentMediaTime()
             self.update(frame: frame, settings: settings)

@@ -30,6 +30,13 @@ final class SessionController: ObservableObject {
                 self.exitVR(reason: "Session ended (tracking lost or camera error).")
             }
             .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .xrcExitRequested)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.exitVR()
+            }
+            .store(in: &cancellables)
     }
 
     var deviceSupported: Bool { ARWorldTrackingConfiguration.isSupported }
@@ -39,7 +46,6 @@ final class SessionController: ObservableObject {
             errorMessage = "ARKit world tracking is not supported on this device."
             return
         }
-        BeatDemo.shared.activate()
         paused = false
         inVR = true
     }
@@ -54,7 +60,8 @@ final class SessionController: ObservableObject {
     }
 
     func exitVR(reason: String? = nil) {
-        BeatDemo.shared.deactivate()
+        XRHome.shared.shutdown()
+        PCBridge.shared.disconnect()
         XRCore.shared.endSession()
         inVR = false
         paused = false

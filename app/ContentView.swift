@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject private var session = SessionController.shared
+    @ObservedObject private var home = XRHome.shared
 
     var body: some View {
         ZStack {
@@ -12,7 +13,9 @@ struct ContentView: View {
                     .ignoresSafeArea()
                 if session.paused {
                     PauseMenuView()
-                } else {
+                } else if home.uiState == .scanning {
+                    ScanOverlayView()
+                } else if home.uiState == .demo {
                     HudOverlay()
                 }
             } else {

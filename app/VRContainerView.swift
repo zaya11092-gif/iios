@@ -22,6 +22,7 @@ final class VRViewController: UIViewController {
         view.addSubview(metalView)
         XRCore.shared.attachView(metalView)
         XRCore.shared.beginSession(view: metalView)
+        XRHome.shared.sessionDidStart()
     }
 
     override func viewWillDisappear(_ animated: Bool) {

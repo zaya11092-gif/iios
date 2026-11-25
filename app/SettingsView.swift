@@ -47,6 +47,35 @@ struct SettingsView: View {
                     sliderRow("Cube speed", value: $s.demoSpeed, in: 0.3...2.5, format: "%.2f")
                     sliderRow("Spawn rate (per s)", value: $s.demoSpawnRate, in: 0.2...3.0, format: "%.2f")
                 }
+                Section("PC streaming (beta)") {
+                    HStack {
+                        Text("PC IP")
+                        TextField("192.168.1.100", text: $s.pcIP)
+                            .multilineTextAlignment(.trailing)
+                            .font(.system(.footnote, design: .monospaced))
+                            .autocorrectionDisabled()
+                            .keyboardType(.decimalPad)
+                    }
+                    Stepper(value: $s.pcPort, in: 1024...65535) {
+                        HStack {
+                            Text("Port")
+                            Spacer()
+                            Text("\(s.pcPort)")
+                                .font(.system(.footnote, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Text("Run the pc-bridge companion on your gaming PC (see docs/STREAMING.md), then use the PC Stream panel in VR. Full ALVR/SteamVR integration lands in the next iteration.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Section("Room") {
+                    Button(role: .destructive) {
+                        XRCore.shared.clearRoomMap()
+                    } label: {
+                        Text("Forget saved room scan")
+                    }
+                }
             }
             .navigationTitle("Settings")
             .toolbar {

@@ -131,6 +131,12 @@ void xrc_set_frame_callback(xrc_frame_fn fn, void *userdata);
 void xrc_scene_begin(void);
 void xrc_scene_push_box(const float *model_col_major, float r, float g, float b, float a);
 void xrc_scene_push_sphere(const float *model_col_major, float r, float g, float b, float a);
+// Textured UI quad (unit XY plane, +Z facing). texture_id comes from the
+// compositor's texture registry (host-side; 0 = untextured). glow 0..1 adds
+// hover emphasis; r/g/b tint and a < 1 render translucent. Alpha blending is
+// premultiplied.
+void xrc_scene_push_panel(const float *model_col_major, int32_t texture_id, float glow,
+                          float r, float g, float b, float a);
 void xrc_scene_end(void);
 
 // ---- diagnostics -----------------------------------------------------------

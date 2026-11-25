@@ -13,7 +13,7 @@ struct BackgroundUniforms {
     float flipH;
     float flipV;
     float brightness;
-    float darkMode;      // 1 = VR mode / no camera frame: draw dim background
+    float bgMode;        // 0 = camera passthrough, 1 = dark (VR), 2 = home environment
 };
 
 struct ItemUniforms {
@@ -25,6 +25,7 @@ struct ItemFragUniforms {
     float4 color;
     float4 lightDir;
     float4 eyePos;
+    float4 texTint;      // x = texture index (0 = untextured), y = hover glow 0..1
 };
 
 struct DistortionUniforms {
@@ -38,7 +39,8 @@ struct DistortionUniforms {
 };
 
 // ---------------------------------------------------------------------------
-// Background (monoscopic passthrough or dark VR backdrop)
+// Background: 0 = monoscopic passthrough, 1 = dark VR backdrop,
+// 2 = home environment (procedural gradient sky + sun)
 // ---------------------------------------------------------------------------
 
 struct BgOut {
@@ -62,14 +64,25 @@ fragment float4 bgFragment(BgOut in [[stage_in]],
                            constant float2 *joints          [[buffer(1)]],
                            constant uint   &jointCount      [[buffer(2)]],
                            constant float  &jointsActive    [[buffer(3)]]) {
-    float2 suv = u.uvOffset + in.uv * u.uvScale;
-    if (u.flipH > 0.5) { suv.x = 1.0 - suv.x; }
-    if (u.flipV > 0.5) { suv.y = 1.0 - suv.y; }
-
     float3 rgb;
-    if (u.darkMode > 0.5) {
-        rgb = float3(0.02, 0.02, 0.045);
+    if (u.bgMode > 1.5) {
+        // ---- home environment: dusk sky with a low sun, horizon haze ----
+        float t = in.uv.y;                                  // 0 top .. 1 bottom
+        float3 zenith = float3(0.045, 0.07, 0.16);
+        float3 horizonGlow = float3(0.42, 0.24, 0.18);
+        float3 belowHorizon = float3(0.10, 0.11, 0.14);
+        rgb = mix(zenith, horizonGlow, smoothstep(0.28, 0.52, t));
+        rgb = mix(rgb, belowHorizon, smoothstep(0.52, 0.85, t));
+        float2 sun = float2(0.5, 0.40);
+        float d = length((in.uv - sun) * float2(1.7, 1.0));
+        rgb += float3(1.0, 0.72, 0.45) * exp(-d * 26.0) * 1.1;   // disc + warm halo
+        rgb += float3(0.9, 0.6, 0.35) * exp(-d * 5.0) * 0.10;    // wide glow
+    } else if (u.bgMode > 0.5) {
+        rgb = float3(0.02, 0.02, 0.045);                     // dark VR backdrop
     } else {
+        float2 suv = u.uvOffset + in.uv * u.uvScale;
+        if (u.flipH > 0.5) { suv.x = 1.0 - suv.x; }
+        if (u.flipV > 0.5) { suv.y = 1.0 - suv.y; }
         constexpr sampler s(filter::linear, address::clamp_to_edge);
         float y  = luma.sample(s, suv).r;
         float2 c = chroma.sample(s, suv).rg;
@@ -80,36 +93,39 @@ fragment float4 bgFragment(BgOut in [[stage_in]],
             float3(1.596, -0.813, 0.000));
         float3 yuv = float3(y, c.x, c.y) - float3(0.0625, 0.5, 0.5);
         rgb = clamp(m * yuv, 0.0, 1.0);
+        rgb *= u.brightness;
+
+        // Debug overlay: green dots on tracked hand joints (buffer-space coords).
+        if (jointsActive > 0.5) {
+            const float2 aspectFix = float2(1.333, 1.0);     // buffer is 4:3
+            for (uint i = 0; i < jointCount && i < 42; i++) {
+                float dj = length((suv - joints[i]) * aspectFix);
+                float mm = smoothstep(0.012, 0.005, dj);
+                rgb = mix(rgb, float3(0.2, 1.0, 0.2), mm);
+            }
+        }
+        return float4(rgb, 1.0);
     }
     rgb *= u.brightness;
-
-    // Debug overlay: green dots on tracked hand joints (buffer-space coords).
-    if (jointsActive > 0.5) {
-        const float2 aspectFix = float2(1.333, 1.0); // buffer is 4:3
-        for (uint i = 0; i < jointCount && i < 42; i++) {
-            float d = length((suv - joints[i]) * aspectFix);
-            float m = smoothstep(0.012, 0.005, d);
-            rgb = mix(rgb, float3(0.2, 1.0, 0.2), m);
-        }
-    }
     return float4(rgb, 1.0);
 }
 
 // ---------------------------------------------------------------------------
-// Scene items (lit primitives)
+// Scene items: lit primitives + textured UI panels.
+// Blending is premultiplied-alpha: (one, oneMinusSourceAlpha).
 // ---------------------------------------------------------------------------
+
+struct SceneVertexIn {
+    float3 position [[attribute(0)]];
+    float3 normal   [[attribute(1)]];
+    float2 uv       [[attribute(2)]];
+};
 
 struct SceneVertexOut {
     float4 pos [[position]];
     float3 normal;
     float3 worldPos;
-};
-
-// Vertex input consumed via [[stage_in]] — the pipeline's MTLVertexDescriptor
-// (float3 pos @0, float3 normal @12, stride 24) matches the MTKMesh layout.
-struct SceneVertexIn {
-    float3 position [[attribute(0)]];
-    float3 normal   [[attribute(1)]];
+    float2 uv;
 };
 
 vertex SceneVertexOut sceneVertex(SceneVertexIn in [[stage_in]],
@@ -121,16 +137,37 @@ vertex SceneVertexOut sceneVertex(SceneVertexIn in [[stage_in]],
     o.worldPos = wp.xyz;
     o.normal = normalize((u.model * float4(n, 0.0)).xyz);
     o.pos = u.mvp * float4(p, 1.0);
+    o.uv = in.uv;
     return o;
 }
 
 fragment float4 sceneFragment(SceneVertexOut in [[stage_in]],
-                              constant ItemFragUniforms &f [[buffer(0)]]) {
+                              constant ItemFragUniforms &f [[buffer(0)]],
+                              texture2d<float> panelTex0 [[texture(2)]],
+                              texture2d<float> panelTex1 [[texture(3)]],
+                              texture2d<float> panelTex2 [[texture(4)]],
+                              texture2d<float> panelTex3 [[texture(5)]],
+                              texture2d<float> panelTex4 [[texture(6)]],
+                              texture2d<float> panelTex5 [[texture(7)]]) {
+    if (f.texTint.x > 0.5) {
+        // Textured UI panel. Textures are premultiplied-alpha (CoreGraphics).
+        texture2d<float> tex = panelTex0;
+        if (f.texTint.x > 5.5)      { tex = panelTex5; }
+        else if (f.texTint.x > 4.5) { tex = panelTex4; }
+        else if (f.texTint.x > 3.5) { tex = panelTex3; }
+        else if (f.texTint.x > 2.5) { tex = panelTex2; }
+        else if (f.texTint.x > 1.5) { tex = panelTex1; }
+        constexpr sampler s(filter::linear, address::clamp_to_edge);
+        float4 t = tex.sample(s, in.uv);
+        float3 tint = mix(float3(1.0), f.color.rgb * 1.6 + float3(0.25), f.texTint.y); // hover glow
+        return float4(t.rgb * tint, t.a);
+    }
+
     float3 n = normalize(in.normal);
     float ndl = max(dot(n, normalize(f.lightDir.xyz)), 0.0);
     float hemi = 0.35 + 0.3 * clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
     float3 c = f.color.rgb * (0.25 + 0.55 * ndl + 0.25 * hemi);
-    return float4(c, f.color.a);
+    return float4(c * f.color.a, f.color.a);                 // premultiplied output
 }
 
 // ---------------------------------------------------------------------------

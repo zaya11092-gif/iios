@@ -39,30 +39,24 @@ final class BeatDemo {
 
     // MARK: lifecycle
 
+    // XRHome owns the xrc frame callback and routes it here in demo state.
     func activate() {
-        guard !active else { return }
         active = true
         cubes.removeAll()
         score = 0; combo = 0; bestCombo = 0; misses = 0
         lastTime = 0
         spawnTimer = 0.5
         lastTips = [nil, nil]
-        // Install through the C ABI — same shape the OpenXR shim will use.
-        xrc_set_mode(XRC_MODE_AR)
-        xrc_set_frame_callback({ _userdata, predictedTime in
-            BeatDemo.shared.frame(predictedTime)
-        }, nil)
     }
 
     func deactivate() {
-        guard active else { return }
         active = false
-        xrc_set_frame_callback(nil, nil)
     }
 
-    // MARK: frame (render thread, invoked by the runtime)
+    // MARK: frame (render thread, invoked by XRHome)
 
-    private func frame(_ predictedTime: Double) {
+    func frame(_ predictedTime: Double) {
+        guard active else { return }
         let dt = lastTime == 0 ? 1.0 / 60.0 : min(max(predictedTime - lastTime, 0.001), 0.1)
         lastTime = predictedTime
 
@@ -171,16 +165,15 @@ final class BeatDemo {
             xrc_scene_push_sphere(&sArr, c.x * 0.7, c.y * 0.7, c.z * 0.7, 1)
         }
 
-        // simple ground grid hint (VR mode needs a floor reference)
-        if xrc_get_mode() == XRC_MODE_VR {
-            let gridColor = SIMD4<Float>(0.25, 0.25, 0.3, 1)
-            for i in -4...4 {
-                let x = Float(i) * 0.5
-                let mLine = XRCMath.model(translation: SIMD3<Float>(x, headPos.y - 1.5, headPos.z - 3.0),
-                                          scale: SIMD3<Float>(0.02, 0.02, 6))
-                var la = XRCMath.floatArray(mLine)
-                xrc_scene_push_box(&la, gridColor.x, gridColor.y, gridColor.z, 1)
-            }
+        // simple ground grid hint so cubes are judgeable against a floor
+        let floorY = XRCore.shared.floorY ?? (headPos.y - 1.5)
+        let gridColor = SIMD4<Float>(0.25, 0.25, 0.3, 1)
+        for i in -4...4 {
+            let x = Float(i) * 0.5
+            let mLine = XRCMath.model(translation: SIMD3<Float>(x, floorY + 0.003, headPos.z - 3.0),
+                                      scale: SIMD3<Float>(0.02, 0.02, 6))
+            var la = XRCMath.floatArray(mLine)
+            xrc_scene_push_box(&la, gridColor.x, gridColor.y, gridColor.z, 1)
         }
 
         xrc_scene_end()

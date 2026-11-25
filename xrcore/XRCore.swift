@@ -118,11 +118,40 @@ final class XRCore: NSObject {
         var kind: MeshKind
         var model: simd_float4x4
         var color: SIMD4<Float>
+        var texIndex: Int32
+        var glow: Float
     }
     private(set) var sceneItems: [SceneItem] = []
     private var sceneCollecting = false
 
     private var lastPauseToggle = 0.0
+
+    // --- room sensing (Quest-style Space Setup equivalent) ---
+    // Discovered surfaces from ARKit plane detection; floorY anchors the home
+    // environment. Restored ARWorldMap anchors reappear through didAdd too.
+    private let anchorLock = NSLock()
+    private var horizontalPlanes: [ARPlaneAnchor] = []
+    private var verticalPlanes: [ARPlaneAnchor] = []
+    private(set) var worldMapRestored = false
+
+    /// Y of the detected floor in world space (nil until a floor is found or
+    /// restored). Home environment sits on this plane.
+    var floorY: Float? {
+        anchorLock.withLock {
+            horizontalPlanes.map { $0.transform.columns.3.y }.min()
+        }
+    }
+
+    var planeCounts: (horizontal: Int, vertical: Int) {
+        anchorLock.withLock { (horizontalPlanes.count, verticalPlanes.count) }
+    }
+
+    /// Detected plane summaries for scan visualization (render thread).
+    var planeAnchors: [(anchor: ARPlaneAnchor, vertical: Bool)] {
+        anchorLock.withLock {
+            horizontalPlanes.map { ($0, false) } + verticalPlanes.map { ($0, true) }
+        }
+    }
 
     // MARK: lifecycle
 
@@ -141,9 +170,22 @@ final class XRCore: NSObject {
         view.delegate = self
         view.isPaused = false
 
+        anchorLock.withLock {
+            horizontalPlanes.removeAll()
+            verticalPlanes.removeAll()
+        }
+        worldMapRestored = false
+
         session.delegate = self
         let config = ARWorldTrackingConfiguration()
         config.worldAlignment = .gravity
+        // Room sensing: surfaces for the home environment + scan flow.
+        config.planeDetection = [.horizontal, .vertical]
+        // Quest-style persistence: restore the saved room scan so the home
+        // lands in the same place every launch without re-scanning.
+        if let map = RoomStore.shared.load() {
+            config.initialWorldMap = map
+        }
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
         sessionRunning = true
 
@@ -180,6 +222,15 @@ final class XRCore: NSObject {
         return latestFrame?.camera.transform
     }
 
+    /// Persists the current room scan (Quest-style Space Setup).
+    func saveRoomMap(completion: ((Bool) -> Void)? = nil) {
+        RoomStore.shared.save(session, completion: completion)
+    }
+
+    func clearRoomMap() {
+        RoomStore.shared.clear()
+    }
+
     /// Pose + timestamp of the last two AR frames, for prediction.
     func headPosePair() -> (a: simd_float4x4, ta: Double, b: simd_float4x4, tb: Double)? {
         frameLock.lock()
@@ -197,9 +248,9 @@ final class XRCore: NSObject {
         sceneItems.removeAll(keepingCapacity: true)
     }
 
-    func scenePush(kind: MeshKind, model: simd_float4x4, color: SIMD4<Float>) {
+    func scenePush(kind: MeshKind, model: simd_float4x4, color: SIMD4<Float>, texIndex: Int32, glow: Float = 0) {
         guard sceneCollecting else { return }
-        sceneItems.append(SceneItem(kind: kind, model: model, color: color))
+        sceneItems.append(SceneItem(kind: kind, model: model, color: color, texIndex: texIndex, glow: glow))
     }
 
     func sceneEnd() {
@@ -252,6 +303,46 @@ extension XRCore: ARSessionDelegate {
     func session(_ session: ARSession, didFailWithError error: Error) {
         // Tracking hard-failed (camera permission denied, sensor error).
         endSession()
+    }
+
+    // MARK: room sensing (plane anchors)
+
+    func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+        let planes = anchors.compactMap { $0 as? ARPlaneAnchor }
+        guard !planes.isEmpty else { return }
+        anchorLock.withLock {
+            for p in planes {
+                if p.alignment == .horizontal {
+                    if !horizontalPlanes.contains(where: { $0.identifier == p.identifier }) {
+                        horizontalPlanes.append(p)
+                    }
+                } else if !verticalPlanes.contains(where: { $0.identifier == p.identifier }) {
+                    verticalPlanes.append(p)
+                }
+            }
+        }
+    }
+
+    func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
+        let planes = anchors.compactMap { $0 as? ARPlaneAnchor }
+        anchorLock.withLock {
+            for p in planes {
+                if let i = horizontalPlanes.firstIndex(where: { $0.identifier == p.identifier }) {
+                    horizontalPlanes[i] = p
+                } else if let i = verticalPlanes.firstIndex(where: { $0.identifier == p.identifier }) {
+                    verticalPlanes[i] = p
+                }
+            }
+        }
+    }
+
+    func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
+        let ids = Set(anchors.compactMap { $0 as? ARPlaneAnchor }.map { $0.identifier })
+        guard !ids.isEmpty else { return }
+        anchorLock.withLock {
+            horizontalPlanes.removeAll { ids.contains($0.identifier) }
+            verticalPlanes.removeAll { ids.contains($0.identifier) }
+        }
     }
 
     func sessionWasInterrupted(_ session: ARSession) {

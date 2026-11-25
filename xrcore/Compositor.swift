@@ -11,7 +11,7 @@ struct BackgroundUniforms {
     var flipH: Float = 0
     var flipV: Float = 0
     var brightness: Float = 1
-    var darkMode: Float = 0
+    var bgMode: Float = 0          // 0 camera, 1 dark, 2 home environment
 }
 
 struct ItemUniforms {
@@ -23,6 +23,7 @@ struct ItemFragUniforms {
     var color = SIMD4<Float>()
     var lightDir = SIMD4<Float>()
     var eyePos = SIMD4<Float>()
+    var texTint = SIMD4<Float>()   // x = texture slot (0 untextured), y = hover glow
 }
 
 struct DistortionUniforms {
@@ -36,8 +37,9 @@ struct DistortionUniforms {
 }
 
 // Compositor — three-pass stereo renderer:
-//   1. background: monoscopic passthrough (YCbCr camera -> RGB) per eye
-//   2. scene:      client items (xrc scene API), shared per-eye depth
+//   1. background: passthrough / dark backdrop / home-environment gradient
+//   2. scene:      client items (lit primitives + textured UI panels),
+//                  premultiplied-alpha blending, shared per-eye depth
 //   3. final:      lens distortion + rotational timewarp to the drawable
 final class Compositor {
 
@@ -48,12 +50,14 @@ final class Compositor {
     private var bgPipeline: MTLRenderPipelineState!
     private var scenePipeline: MTLRenderPipelineState!
     private var distortPipeline: MTLRenderPipelineState!
-    private var depthState: MTLDepthStencilState!
+    private var depthStateWrite: MTLDepthStencilState!
+    private var depthStateNoWrite: MTLDepthStencilState!
 
     private let meshes: [MeshKind: GPUMesh]
 
     private var cvCache: CVMetalTextureCache?
     private var frameCVTextures: [CVMetalTexture] = []   // keep wrappers alive per frame
+    private var cvFlushCounter = 0
     private var dummyLuma: MTLTexture!
     private var dummyChroma: MTLTexture!
 
@@ -69,6 +73,17 @@ final class Compositor {
     private let gridRows = 24
     private(set) var lastEyeAspect: Float = 0.9
 
+    // Scene background mode requested by the shell (0 camera / 1 dark / 2 home).
+    // The demo modes honor the passthrough setting; scan/home force sensible
+    // values in VRHome.
+    var sceneBackgroundMode: Int = 1
+
+    // Texture registry for UI panels. IDs are stable handles handed to
+    // xrc_scene_push_panel; textures re-bind each frame into slots 2..7.
+    private let texLock = NSLock()
+    private var panelTextures: [Int32: MTLTexture] = [:]
+    private var nextTextureID: Int32 = 1
+
     init() {
         device = MTLCreateSystemDefaultDevice()!
         queue = device.makeCommandQueue()!
@@ -76,7 +91,7 @@ final class Compositor {
         meshes = MeshFactory.makeMeshes(device: device)
 
         buildPipelines()
-        buildDepthState()
+        buildDepthStates()
         buildDummies()
         buildJointsBuffer()
 
@@ -93,11 +108,16 @@ final class Compositor {
         bg.colorAttachments[0].pixelFormat = .bgra8Unorm
         bgPipeline = try! device.makeRenderPipelineState(descriptor: bg)
 
-        // Scene: position(0) + normal(1) in one interleaved buffer.
+        // Scene: position(0) + normal(1) + uv(2), 32-byte interleaved stride.
         let sc = MTLRenderPipelineDescriptor()
         sc.vertexFunction = library.makeFunction(name: "sceneVertex")
         sc.fragmentFunction = library.makeFunction(name: "sceneFragment")
         sc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        sc.colorAttachments[0].isBlendingEnabled = true
+        sc.colorAttachments[0].sourceRGBBlendFactor = .one                 // premultiplied
+        sc.colorAttachments[0].sourceAlphaBlendFactor = .one
+        sc.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        sc.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         sc.depthAttachmentPixelFormat = .depth32Float
         let vdesc = MTLVertexDescriptor()
         vdesc.attributes[0].format = .float3
@@ -106,7 +126,10 @@ final class Compositor {
         vdesc.attributes[1].format = .float3
         vdesc.attributes[1].offset = 12
         vdesc.attributes[1].bufferIndex = 0
-        vdesc.layouts[0].stride = 24
+        vdesc.attributes[2].format = .float2
+        vdesc.attributes[2].offset = 24
+        vdesc.attributes[2].bufferIndex = 0
+        vdesc.layouts[0].stride = 32
         vdesc.layouts[0].stepRate = 1
         vdesc.layouts[0].stepFunction = .perVertex
         sc.vertexDescriptor = vdesc
@@ -120,11 +143,17 @@ final class Compositor {
         distortPipeline = try! device.makeRenderPipelineState(descriptor: di)
     }
 
-    private func buildDepthState() {
-        let dsd = MTLDepthStencilDescriptor()
-        dsd.depthCompareFunction = .less
-        dsd.isDepthWriteEnabled = true
-        depthState = device.makeDepthStencilState(descriptor: dsd)
+    private func buildDepthStates() {
+        let w = MTLDepthStencilDescriptor()
+        w.depthCompareFunction = .less
+        w.isDepthWriteEnabled = true
+        depthStateWrite = device.makeDepthStencilState(descriptor: w)
+
+        // Translucent surfaces (planes, hover glows): read depth, don't write.
+        let nw = MTLDepthStencilDescriptor()
+        nw.depthCompareFunction = .less
+        nw.isDepthWriteEnabled = false
+        depthStateNoWrite = device.makeDepthStencilState(descriptor: nw)
     }
 
     private func buildDummies() {
@@ -149,6 +178,17 @@ final class Compositor {
         d.usage = usage
         d.storageMode = storage
         return device.makeTexture(descriptor: d)!
+    }
+
+    // MARK: - panel texture registry
+
+    func registerPanelTexture(_ tex: MTLTexture) -> Int32 {
+        texLock.lock()
+        defer { texLock.unlock() }
+        let id = nextTextureID
+        nextTextureID += 1
+        panelTextures[id] = tex
+        return id
     }
 
     // MARK: - view lifecycle
@@ -205,11 +245,19 @@ final class Compositor {
         frameCVTextures.removeAll(keepingCapacity: true)
         var lumaTex: MTLTexture?
         var chromaTex: MTLTexture?
-        if settings.passthrough, CVPixelBufferGetPlaneCount(arFrame.capturedImage) == 2 {
+        if sceneBackgroundMode == 0, settings.passthrough, CVPixelBufferGetPlaneCount(arFrame.capturedImage) == 2 {
             lumaTex = planeTexture(arFrame.capturedImage, plane: 0, format: .r8Unorm)
             chromaTex = planeTexture(arFrame.capturedImage, plane: 1, format: .rg8Unorm)
+            // Unbounded cache growth = jetsam crash; flush stale entries every ~2 s.
+            cvFlushCounter &+= 1
+            if cvFlushCounter % 120 == 0, let cache = cvCache {
+                CVMetalTextureCacheFlush(cache, 0, nil)
+            }
         }
-        let dark = !settings.passthrough || (lumaTex == nil || chromaTex == nil)
+        var mode = Float(sceneBackgroundMode)
+        if sceneBackgroundMode == 0, lumaTex == nil || chromaTex == nil {
+            mode = 1 // requested passthrough but no camera frame -> dark
+        }
         let bindLuma = lumaTex ?? dummyLuma
         let bindChroma = chromaTex ?? dummyChroma
 
@@ -231,11 +279,11 @@ final class Compositor {
         bg.flipH = settings.flipH ? 1 : 0
         bg.flipV = settings.flipV ? 1 : 0
         bg.brightness = Float(settings.ptBrightness)
-        bg.darkMode = dark ? 1 : 0
+        bg.bgMode = mode
 
         // --- joints debug buffer ---
         var jointCount = UInt32(0)
-        if jointsActive && !dark {
+        if jointsActive && sceneBackgroundMode == 0 {
             let n = min(joints.count, 42)
             jointCount = UInt32(n)
             if n > 0 {
@@ -262,6 +310,16 @@ final class Compositor {
 
         let lightDir = SIMD4<Float>(normalize(SIMD3<Float>(0.3, 1.0, -0.4)), 0)
 
+        // --- panel texture slot map: registry ids -> fragment slots 2..7 ---
+        texLock.lock()
+        let sortedIDs = panelTextures.keys.sorted()
+        var slotOf: [Int32: Int] = [:]
+        let boundTextures = sortedIDs.prefix(6).enumerated().map { (i, id) -> (Int32, MTLTexture) in
+            slotOf[id] = i + 2
+            return (id, panelTextures[id]!)
+        }
+        texLock.unlock()
+
         // --- pass 1 + 2 per eye ---
         for (eye, sceneTex, depthTex) in [(0, sceneTexL!, depthTexL!), (1, sceneTexR!, depthTexR!)] {
             let eyePose = eye == 0 ? poseL : poseR
@@ -283,24 +341,26 @@ final class Compositor {
             // Scene items
             if let enc = cmd.makeRenderCommandEncoder(descriptor: passDesc(target: sceneTex, load: .load, depth: depthTex)) {
                 enc.setRenderPipelineState(scenePipeline)
-                enc.setDepthStencilState(depthState)
+                enc.setDepthStencilState(depthStateWrite)
                 enc.setCullMode(MTLCullMode.back)
                 enc.setFrontFacing(MTLWinding.counterClockwise)
+                for (id, tex) in boundTextures {
+                    enc.setFragmentTexture(tex, index: slotOf[id]!)
+                }
                 for item in items {
                     var vu = ItemUniforms(mvp: proj * viewM * item.model, model: item.model)
+                    // Shader indexes fragment texture slots; registry id -> slot.
+                    let texSlot = slotOf[item.texIndex] ?? 0
                     var fu = ItemFragUniforms(color: item.color, lightDir: lightDir,
-                                              eyePos: SIMD4<Float>(eyePose.columns.3.xyz, 1))
-                    let mesh = item.kind == .box ? meshes[.box] : meshes[.sphere]
-                    guard let mesh = mesh else { continue }
+                                              eyePos: SIMD4<Float>(eyePose.columns.3.xyz, 1),
+                                              texTint: SIMD4<Float>(Float(texSlot), item.glow, 0, 0))
+                    let mesh = meshes[item.kind] ?? meshes[.box]!
                     enc.setVertexBuffer(mesh.vertexBuffer, offset: 0, index: 0)
                     enc.setVertexBytes(&vu, length: MemoryLayout<ItemUniforms>.size, index: 1)
                     enc.setFragmentBytes(&fu, length: MemoryLayout<ItemFragUniforms>.size, index: 0)
-                    if mesh.indexCount > 0, let ib = mesh.indexBuffer {
-                        enc.drawIndexedPrimitives(type: MTLPrimitiveType.triangle, indexCount: mesh.indexCount,
-                                                  indexType: mesh.indexType, indexBuffer: ib, indexBufferOffset: 0)
-                    } else {
-                        enc.drawPrimitives(type: MTLPrimitiveType.triangle, vertexStart: 0, vertexCount: mesh.vertexCount)
-                    }
+                    if item.color.a < 0.99 { enc.setDepthStencilState(depthStateNoWrite) }
+                    enc.drawPrimitives(type: MTLPrimitiveType.triangle, vertexStart: 0, vertexCount: mesh.vertexCount)
+                    if item.color.a < 0.99 { enc.setDepthStencilState(depthStateWrite) }
                 }
                 enc.endEncoding()
             }

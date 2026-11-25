@@ -24,16 +24,36 @@ struct PauseMenuView: View {
                     session.resume()
                 } label: {
                     Label("Resume", systemImage: "play.fill")
-                        .frame(minWidth: 140)
+                        .frame(minWidth: 130)
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+
+                Button {
+                    XRHome.shared.backToHome()
+                    session.resume()
+                } label: {
+                    Label("Home", systemImage: "house.fill")
+                        .frame(minWidth: 110)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+
+                Button {
+                    XRHome.shared.startScan()
+                    session.resume()
+                } label: {
+                    Label("Rescan", systemImage: "camera.metering.matrix")
+                        .frame(minWidth: 110)
+                }
+                .buttonStyle(.bordered)
                 .controlSize(.large)
 
                 Button(role: .destructive) {
                     session.exitVR()
                 } label: {
-                    Label("Exit VR", systemImage: "xmark")
-                        .frame(minWidth: 120)
+                    Label("Exit", systemImage: "xmark")
+                        .frame(minWidth: 100)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)

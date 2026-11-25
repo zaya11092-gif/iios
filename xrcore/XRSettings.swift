@@ -44,4 +44,13 @@ final class XRSettings: ObservableObject {
     // Demo game
     @Published var demoSpeed: Double = XRSettings.d("demoSpeed", 1.0) { didSet { XRSettings.shared.setD(demoSpeed, "demoSpeed") } }
     @Published var demoSpawnRate: Double = XRSettings.d("demoSpawnRate", 1.2) { didSet { XRSettings.shared.setD(demoSpawnRate, "demoSpawnRate") } }
+
+    // PC streaming (Phase 2, beta)
+    @Published var pcIP: String = udString("pcIP", "192.168.1.100") { didSet { UserDefaults.standard.set(pcIP, forKey: "pcIP") } }
+    @Published var pcPort: Int = XRSettings.i("pcPort", 9100) { didSet { XRSettings.shared.setI(pcPort, "pcPort") } }
+    @Published var showJointDots: Bool = XRSettings.b("showJointDots", true) { didSet { XRSettings.shared.setB(showJointDots, "showJointDots") } }
+
+    private static func udString(_ key: String, _ def: String) -> String {
+        UserDefaults.standard.object(forKey: key) as? String ?? def
+    }
 }
