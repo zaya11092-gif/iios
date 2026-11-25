@@ -478,6 +478,14 @@ final class XRHome: ObservableObject {
         drawGridPanel(panelButtons, pos: panelPos, facing: panelFacing, cols: 3, cell: 0.145, size: 0.13)
     }
 
+    /// Entry point for the both-triggers system gesture (XRCore): toggles
+    /// the floating settings panel in every mode.
+    func togglePanelFromGesture() {
+        panelMirror.toggle()
+        let v = panelMirror
+        DispatchQueue.main.async { self.panelVisible = v }
+    }
+
     // MARK: - transforms for raycasts
 
     private func buttonTransform(_ i: Int, buttons: [MenuButton], layout: ButtonLayout) -> (SIMD3<Float>, simd_quatf, Float) {
