@@ -30,8 +30,10 @@ final class XRHome: ObservableObject {
     @Published var roomScanSaved = false
     /// VR Mode: full 3D environment (skeleton hands) vs passthrough.
     @Published var vrMode = false
-    /// Universal menu bar visibility (toggled by the palm-up pinch gesture).
+    /// Universal menu bar visibility (home state shows it by default).
     @Published var menuVisible = true
+    /// CardboardXR-style floating settings panel (palm-up pinch / both-triggers).
+    @Published var panelVisible = false
 
     private var state: UIState = .booting            // render-thread mirror
     private var vrModeMirror = false                 // render-thread mirror
@@ -40,6 +42,7 @@ final class XRHome: ObservableObject {
     private var scanDwellOK: Double = 0
     private var lastMenuToggle: Double = 0
     private var lastPinchDown = [false, false]       // per-hand trigger edges
+    private var lastPanelPinchDown = [false, false]  // panel input edges
     private var menuBuilt = false
 
     // Menu bar buttons (world-relative to head each frame).
@@ -49,7 +52,8 @@ final class XRHome: ObservableObject {
         var texId: Int32 = 0
         var hovered = false
 
-        enum Action { case goHome, startDemo, toggleVR, toggleStream, rescanRoom, launchWindows, exitVR }
+        enum Action { case goHome, startDemo, toggleVR, toggleStream, rescanRoom, launchWindows, exitVR,
+                      brightCycle, speedCycle, spawnCycle, closePanel }
 
         init(action: Action, renderer: PanelTextRenderer) {
             self.action = action
@@ -63,6 +67,14 @@ final class XRHome: ObservableObject {
     private var streamButtonIndex: Int = -1
     private var vrButtonIndex: Int = -1
     private var windowsButtonIndex: Int = -1
+
+    // Floating settings panel (lazy-follow, CardboardXR-style).
+    private var panelButtons: [MenuButton] = []
+    private var panelBuilt = false
+    private var panelPos = SIMD3<Float>(0, 1.2, -0.65)
+    private var panelFacing = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+    private var lastPanelT: Double = 0
+    private var panelMirror = false
 
     private var settings: XRSettings { XRSettings.shared }
     private let core = XRCore.shared
@@ -93,16 +105,20 @@ final class XRHome: ObservableObject {
     func shutdown() {
         xrc_set_frame_callback(nil, nil)
         menuButtons.removeAll()
+        panelButtons.removeAll()
         menuBuilt = false
+        panelBuilt = false
         BeatDemo.shared.deactivate()
         DispatchQueue.main.async {
             self.uiState = .booting
             self.menuVisible = true
+            self.panelVisible = false
             self.vrMode = false
         }
         state = .booting
         vrModeMirror = false
         menuVisibleMirror = true
+        panelMirror = false
     }
 
     // MARK: - state transitions
@@ -158,6 +174,9 @@ final class XRHome: ObservableObject {
             core.compositor.sceneBackgroundMode = 1
         }
 
+        let dt = lastPanelT == 0 ? 1.0 / 60.0 : min(max(t - lastPanelT, 0.001), 0.2)
+        lastPanelT = t
+        drawPanel(dt: dt)
         drawPalmIcons()
     }
 
@@ -280,6 +299,173 @@ final class XRHome: ObservableObject {
         }
     }
 
+    // MARK: - floating settings panel (CardboardXR-style palm-summoned UI)
+
+    /// Called from the system gestures (palm pinch / both triggers). In
+    /// goggles the 2D pause overlay is unreadable, so this in-VR panel is the
+    /// pause/settings surface; Phone Mode keeps the 2D overlay instead.
+    func togglePanelFromGesture() {
+        panelMirror.toggle()
+        let v = panelMirror
+        DispatchQueue.main.async { self.panelVisible = v }
+    }
+
+    private func buildPanelIfNeeded() {
+        guard !panelBuilt else { return }
+        let device = core.compositor.device
+        let orange = UIColor(red: 0.95, green: 0.45, blue: 0.25, alpha: 1)
+        let blue = UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1)
+        let green = UIColor(red: 0.3, green: 0.85, blue: 0.6, alpha: 1)
+        let red = UIColor(red: 0.9, green: 0.3, blue: 0.35, alpha: 1)
+        let purple = UIColor(red: 0.55, green: 0.35, blue: 1.0, alpha: 1)
+
+        func make(_ action: MenuButton.Action, _ title: String, _ status: String = "", _ accent: UIColor) -> MenuButton {
+            let r = PanelTextRenderer(device: device, width: 256, height: 256, style: .button)
+            r.render(PanelTextRenderer.Content(title: title, statusLine: status, accent: accent))
+            let b = MenuButton(action: action, renderer: r)
+            b.texId = core.compositor.registerPanelTexture(r.texture)
+            return b
+        }
+
+        // Custom options (iios): environment, game tuning, room, streaming.
+        panelButtons = [
+            make(.goHome, "Home", "", green),
+            make(.startDemo, "Beat Demo", "", orange),
+            make(.toggleVR, "VR Mode", vrModeMirror ? "ON" : "OFF", blue),
+            make(.brightCycle, "Brightness", String(format: "%.1f", settings.ptBrightness), blue),
+            make(.speedCycle, "Speed", String(format: "%.1f", settings.demoSpeed), orange),
+            make(.spawnCycle, "Spawns", String(format: "%.1f", settings.demoSpawnRate), orange),
+            make(.rescanRoom, "Rescan", "", blue),
+            make(.toggleStream, "PC Stream", PCBridge.shared.status.label, blue),
+            make(.launchWindows, "Windows", WindowsHost.shared.status.label, purple),
+            make(.closePanel, "Close", "", red),
+        ]
+        panelBuilt = true
+    }
+
+    /// Lazily-follows the head (CardboardXR behavior): eases toward a point
+    /// in front of the gaze instead of snapping, so it never swims.
+    private func drawPanel(dt: Double) {
+        guard panelMirror else { return }
+        buildPanelIfNeeded()
+        guard let headPose = core.headPose() else { return }
+        let head = headPose.columns.3.xyz
+        var fwd = -headPose.columns.2.xyz
+        fwd.y = 0
+        if simd_length(fwd) < 0.05 { fwd = SIMD3<Float>(0, 0, -1) }
+        fwd = normalize(fwd)
+        let floor = core.floorY ?? (head.y - 1.4)
+        let target = head + fwd * 0.62 + SIMD3<Float>(0, max(floor + 0.9, head.y - 0.18) - head.y, 0)
+        let targetY = max(floor + 0.9, head.y - 0.18)
+
+        // lazy follow (position ease + yaw slerp)
+        let alpha = Float(min(1, dt * 9))
+        panelPos += (SIMD3<Float>(target.x, targetY, target.z) - panelPos) * alpha
+        let want = quatFacing(normal: SIMD3<Float>(-fwd.x, -0.12, -fwd.z))
+        panelFacing = simd_slerp(panelFacing, want, alpha)
+
+        let hover = raycastButtons(panelButtons, layout: .panel)
+        let cell: Float = 0.145
+        let size: Float = 0.13
+        let cols = 3
+        let right = panelFacing * SIMD3<Float>(1, 0, 0)
+        let up = panelFacing * SIMD3<Float>(0, 1, 0)
+        for (i, b) in panelButtons.enumerated() {
+            let row = i / cols
+            let col = i % cols
+            let rx = (Float(col) - Float(cols - 1) * 0.5) * cell
+            let ry = (Float(panelButtons.count / cols) * 0.5 - Float(row) - 0.5) * cell
+            let pos = panelPos + right * rx + up * ry
+            let m = XRCMath.model(translation: pos, rotation: panelFacing,
+                                  scale: SIMD3<Float>(size, size, 1))
+            var arr = XRCMath.floatArray(m)
+            b.hovered = (hover == i)
+            xrc_scene_push_panel(&arr, b.texId, b.hovered ? 1 : 0, 1, 1, 1, 1)
+            if b.hovered, let beam = laserRay(hit: pos) {
+                let mid = beam.0 + beam.1 * (beam.2 * 0.5)
+                let bm = XRCMath.model(translation: mid, rotation: XRCMath.quatLooking(direction: beam.1),
+                                       scale: SIMD3<Float>(0.005, 0.005, beam.2))
+                var bArr = XRCMath.floatArray(bm)
+                xrc_scene_push_box(&bArr, 1.0, 0.85, 0.4, 0.9)
+            }
+        }
+        handlePanelInput(hover: hover, buttons: panelButtons)
+    }
+
+    private func handlePanelInput(hover: Int?, buttons: [MenuButton]) {
+        guard let hover = hover else { return }
+        for h in 0..<Int(XRC_HAND_COUNT) {
+            let s = core.handTracker.snapshot(for: Int32(h))
+            let down = s.isTracked && s.buttons & UInt32(XRC_BTN_TRIGGER) != 0
+            let rising = down && !lastPanelPinchDown[h]
+            lastPanelPinchDown[h] = down
+            if rising {
+                panelConsumedEdge = true // don't let the same pinch toggle the panel
+                activate(buttons[hover].action)
+                return
+            }
+        }
+    }
+
+    /// One ray-vs-buttons pass shared by the panel and the menu bar.
+    private enum ButtonLayout { case panel, bar }
+    private func raycastButtons(_ buttons: [MenuButton], layout: ButtonLayout) -> Int? {
+        guard let hand = bestPointerHand() else { return nil }
+        var ctrl = xrc_controller_state()
+        _ = xrc_get_controller(hand, &ctrl)
+        guard ctrl.is_tracked != 0 else { return nil }
+        let pose = XRCMath.fromXrc(ctrl.pose)
+        let origin = pose.columns.3.xyz
+        let dir = -pose.columns.2.xyz
+
+        var best: (Int, Float)?
+        for (i, b) in buttons.enumerated() {
+            let (pos, facing, half) = layout == .panel
+                ? panelButtonTransform(i, buttons: buttons)
+                : barButtonTransform(i)
+            let d = dot(normalize(facing), dir)
+            guard abs(d) > 1e-4 else { continue }
+            let t = dot(normalize(facing), pos - origin) / d
+            guard t > 0.05, t < 2.0 else { continue }
+            let hit = origin + dir * t
+            let local = hit - pos
+            let m = simd_float4x4(facing)
+            if abs(dot(local, m.columns.0.xyz)) < half, abs(dot(local, m.columns.1.xyz)) < half {
+                if best == nil || t < best!.1 { best = (i, t) }
+            }
+        }
+        return best?.0
+    }
+
+    private func panelButtonTransform(_ i: Int, buttons: [MenuButton]) -> (SIMD3<Float>, simd_quatf, Float) {
+        let cell: Float = 0.145
+        let cols = 3
+        let row = i / cols
+        let col = i % cols
+        let rx = (Float(col) - Float(cols - 1) * 0.5) * cell
+        let ry = (Float(buttons.count / cols) * 0.5 - Float(row) - 0.5) * cell
+        let pos = panelPos + (panelFacing * SIMD3<Float>(1, 0, 0)) * rx + (panelFacing * SIMD3<Float>(0, 1, 0)) * ry
+        return (pos, panelFacing, 0.065)
+    }
+
+    private func barButtonTransform(_ i: Int) -> (SIMD3<Float>, simd_quatf, Float) {
+        guard let headPose = core.headPose() else { return (SIMD3<Float>(0, 0, -1), panelFacing, 0.07) }
+        let head = headPose.columns.3.xyz
+        var fwd = -headPose.columns.2.xyz
+        fwd.y = 0
+        if simd_length(fwd) < 0.05 { fwd = SIMD3<Float>(0, 0, -1) }
+        fwd = normalize(fwd)
+        let floor = core.floorY ?? (head.y - 1.4)
+        let barY = max(floor + 0.55, head.y - 0.34)
+        let right = normalize(SIMD3<Float>(-fwd.z, 0, fwd.x))
+        let spacing: Float = 0.155
+        let center = head + fwd * 0.72
+        var pos = center - right * (spacing * Float(menuButtons.count - 1) * 0.5) + right * (spacing * Float(i))
+        pos.y = barY
+        let facing = quatFacing(normal: SIMD3<Float>((head - pos).x, 0.18, (head - pos).z))
+        return (pos, facing, 0.07)
+    }
+
     // MARK: - system gesture + menu bar
 
     private func drawPalmIcons() {
@@ -305,25 +491,30 @@ final class XRHome: ObservableObject {
         handleGesture(headPos: headPos)
     }
 
-    /// Palm held flat + pinch (thumb-index tap) toggles the menu bar, like
-    /// the Quest system gesture. Works in home and demo states.
+    /// Palm held flat + pinch (thumb-index tap) summons the floating settings
+    /// panel — the CardboardXR system gesture. Works in home and demo states.
     private func handleGesture(headPos: SIMD3<Float>) {
         var toggled = false
+        var consumedByUI = panelConsumedEdge
+        panelConsumedEdge = false
         for h in 0..<Int(XRC_HAND_COUNT) {
             let s = core.handTracker.snapshot(for: Int32(h))
             let down = s.isTracked && s.buttons & UInt32(XRC_BTN_TRIGGER) != 0
             let rising = down && !lastPinchDown[h]
             lastPinchDown[h] = down
+            if rising, consumedByUI { consumedByUI = false; continue }
             if rising, s.palmFlat, CACurrentMediaTime() - lastMenuToggle > 0.4 {
                 toggled = true
             }
         }
         guard toggled else { return }
         lastMenuToggle = CACurrentMediaTime()
-        menuVisibleMirror.toggle()
-        let v = menuVisibleMirror
-        DispatchQueue.main.async { self.menuVisible = v }
+        panelMirror.toggle()
+        let v = panelMirror
+        DispatchQueue.main.async { self.panelVisible = v }
     }
+
+    private var panelConsumedEdge = false
 
     private func buildMenuIfNeeded() {
         guard !menuBuilt else { return }
@@ -536,11 +727,50 @@ final class XRHome: ObservableObject {
                         accent: UIColor(red: 0.55, green: 0.35, blue: 1.0, alpha: 1)))
                 }
             }
+        case .brightCycle:
+            DispatchQueue.main.async {
+                let presets = [0.5, 0.8, 1.0, 1.3]
+                let cur = presets.first(where: { abs($0 - self.settings.ptBrightness) < 0.01 })
+                let next = presets[(presets.firstIndex(where: { $0 == cur }) ?? presets.count - 1 + 1) % presets.count]
+                self.settings.ptBrightness = next
+                self.rerenderPanelButton(.brightCycle, status: String(format: "%.1f", next))
+            }
+        case .speedCycle:
+            DispatchQueue.main.async {
+                let presets = [0.5, 1.0, 1.5, 2.0]
+                let cur = presets.first(where: { abs($0 - self.settings.demoSpeed) < 0.01 })
+                let next = presets[(presets.firstIndex(where: { $0 == cur }) ?? presets.count - 1 + 1) % presets.count]
+                self.settings.demoSpeed = next
+                self.rerenderPanelButton(.speedCycle, status: String(format: "%.1f", next))
+            }
+        case .spawnCycle:
+            DispatchQueue.main.async {
+                let presets = [0.5, 1.0, 1.5, 2.5]
+                let cur = presets.first(where: { abs($0 - self.settings.demoSpawnRate) < 0.01 })
+                let next = presets[(presets.firstIndex(where: { $0 == cur }) ?? presets.count - 1 + 1) % presets.count]
+                self.settings.demoSpawnRate = next
+                self.rerenderPanelButton(.spawnCycle, status: String(format: "%.1f", next))
+            }
+        case .closePanel:
+            panelMirror = false
+            DispatchQueue.main.async { self.panelVisible = false }
         case .exitVR:
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .xrcExitRequested, object: nil)
             }
         }
+    }
+
+    private func rerenderPanelButton(_ action: MenuButton.Action, status: String) {
+        guard let b = panelButtons.first(where: { $0.action == action }) else { return }
+        let titles: [MenuButton.Action: String] = [
+            .brightCycle: "Brightness", .speedCycle: "Speed", .spawnCycle: "Spawns",
+        ]
+        b.renderer.render(PanelTextRenderer.Content(
+            title: titles[action] ?? "?", statusLine: status,
+            accent: action == .brightCycle
+                ? UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1)
+                : UIColor(red: 0.95, green: 0.45, blue: 0.25, alpha: 1)))
     }
 
     /// Rotation with +Z aligned to `normal`, Y-up reference.

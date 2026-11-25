@@ -396,15 +396,24 @@ extension XRCore: MTKViewDelegate {
         }
         sceneEnd()
 
-        // --- pause gesture: both triggers held (debounced) ---
+        // --- system gesture: both triggers held (debounced) ---
+        // Phone Mode: opens the 2D pause overlay (readable hand-held).
+        // Goggles: opens the in-VR floating panel — a screen-space overlay is
+        // split across both eyes and unusable in stereo.
         let l = handTracker.snapshot(for: Int32(XRC_HAND_LEFT))
         let r = handTracker.snapshot(for: Int32(XRC_HAND_RIGHT))
         let bothTriggers = l.buttons & UInt32(XRC_BTN_TRIGGER) != 0 && r.buttons & UInt32(XRC_BTN_TRIGGER) != 0
         let now = CACurrentMediaTime()
         if bothTriggers, now - lastPauseToggle > 0.8 {
             lastPauseToggle = now
-            DispatchQueue.main.async { [weak self] in
-                self?.setPaused(!(self?.paused ?? false))
+            if settings.phoneMode {
+                DispatchQueue.main.async { [weak self] in
+                    self?.setPaused(!(self?.paused ?? false))
+                }
+            } else {
+                DispatchQueue.main.async {
+                    XRHome.shared.togglePanelFromGesture()
+                }
             }
         }
 
