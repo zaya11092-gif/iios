@@ -566,6 +566,14 @@ final class XRHome: ObservableObject {
         return (headPose.columns.3.xyz, dir)
     }
 
+    private func bestPointerHand() -> Int32? {
+        let r = core.handTracker.snapshot(for: Int32(XRC_HAND_RIGHT))
+        if r.isTracked { return Int32(XRC_HAND_RIGHT) }
+        let l = core.handTracker.snapshot(for: Int32(XRC_HAND_LEFT))
+        if l.isTracked { return Int32(XRC_HAND_LEFT) }
+        return nil
+    }
+
     private func drawBeam(from origin: SIMD3<Float>, dir: SIMD3<Float>, to point: SIMD3<Float>) {
         let along = max(simd_dot(point - origin, dir), 0.05)
         let mid = origin + dir * (along * 0.5)
