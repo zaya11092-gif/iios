@@ -11,6 +11,7 @@ final class PanelTextRenderer {
         case card         // wide info card (title + subtitle + status)
         case button       // square menu-bar button (centered label + status)
         case menuIcon     // palm gesture indicator: 3 accent bars glyph
+        case reticle      // gaze ring (CardboardXR-style) with center dot
     }
 
     struct Content {
@@ -115,6 +116,19 @@ final class PanelTextRenderer {
                 content.accent.setFill()
                 bar.fill()
             }
+
+        case .reticle:
+            // CardboardXR gaze ring: transparent inside, ring + center dot.
+            let ringRect = bgRect.insetBy(dx: w * 0.18, dy: h * 0.18)
+            let ring = UIBezierPath(ovalIn: ringRect)
+            UIColor.white.withAlphaComponent(0.95).setStroke()
+            ring.lineWidth = w * 0.055
+            ring.stroke()
+            let dotRect = CGRect(x: w * 0.5 - w * 0.045, y: h * 0.5 - h * 0.045,
+                                 width: w * 0.09, height: h * 0.09)
+            let dot = UIBezierPath(ovalIn: dotRect)
+            content.accent.setFill()
+            dot.fill()
         }
 
         // Upload (CG rows are top-first, matching texture v=0 = top).

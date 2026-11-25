@@ -41,8 +41,6 @@ final class XRHome: ObservableObject {
     private var scanStartedAt: Double = 0
     private var scanDwellOK: Double = 0
     private var lastMenuToggle: Double = 0
-    private var lastPinchDown = [false, false]       // per-hand trigger edges
-    private var lastPanelPinchDown = [false, false]  // panel input edges
     private var menuBuilt = false
 
     // Menu bar buttons (world-relative to head each frame).
@@ -67,6 +65,7 @@ final class XRHome: ObservableObject {
     private var streamButtonIndex: Int = -1
     private var vrButtonIndex: Int = -1
     private var windowsButtonIndex: Int = -1
+    private var reticleTexId: Int32 = 0
 
     // Floating settings panel (lazy-follow, CardboardXR-style).
     private var panelButtons: [MenuButton] = []
@@ -178,6 +177,7 @@ final class XRHome: ObservableObject {
         lastPanelT = t
         drawPanel(dt: dt)
         drawPalmIcons()
+        routeInput()
     }
 
     private func syncBackgroundMode() {
@@ -365,7 +365,8 @@ final class XRHome: ObservableObject {
         let want = quatFacing(normal: SIMD3<Float>(-fwd.x, -0.12, -fwd.z))
         panelFacing = simd_slerp(panelFacing, want, alpha)
 
-        let hover = raycastButtons(panelButtons, layout: .panel)
+        // Buttons draw with hover flags set by routeInput() (the unified
+        // gaze/pinch router runs after all draws).
         let cell: Float = 0.145
         let size: Float = 0.13
         let cols = 3
@@ -380,46 +381,15 @@ final class XRHome: ObservableObject {
             let m = XRCMath.model(translation: pos, rotation: panelFacing,
                                   scale: SIMD3<Float>(size, size, 1))
             var arr = XRCMath.floatArray(m)
-            b.hovered = (hover == i)
             xrc_scene_push_panel(&arr, b.texId, b.hovered ? 1 : 0, 1, 1, 1, 1)
-            if b.hovered, let beam = laserRay(hit: pos) {
-                let mid = beam.0 + beam.1 * (beam.2 * 0.5)
-                let bm = XRCMath.model(translation: mid, rotation: XRCMath.quatLooking(direction: beam.1),
-                                       scale: SIMD3<Float>(0.005, 0.005, beam.2))
-                var bArr = XRCMath.floatArray(bm)
-                xrc_scene_push_box(&bArr, 1.0, 0.85, 0.4, 0.9)
-            }
-        }
-        handlePanelInput(hover: hover, buttons: panelButtons)
-    }
-
-    private func handlePanelInput(hover: Int?, buttons: [MenuButton]) {
-        guard let hover = hover else { return }
-        for h in 0..<Int(XRC_HAND_COUNT) {
-            let s = core.handTracker.snapshot(for: Int32(h))
-            let down = s.isTracked && s.buttons & UInt32(XRC_BTN_TRIGGER) != 0
-            let rising = down && !lastPanelPinchDown[h]
-            lastPanelPinchDown[h] = down
-            if rising {
-                panelConsumedEdge = true // don't let the same pinch toggle the panel
-                activate(buttons[hover].action)
-                return
-            }
         }
     }
 
     /// One ray-vs-buttons pass shared by the panel and the menu bar.
     private enum ButtonLayout { case panel, bar }
-    private func raycastButtons(_ buttons: [MenuButton], layout: ButtonLayout) -> Int? {
-        guard let hand = bestPointerHand() else { return nil }
-        var ctrl = xrc_controller_state()
-        _ = xrc_get_controller(hand, &ctrl)
-        guard ctrl.is_tracked != 0 else { return nil }
-        let pose = XRCMath.fromXrc(ctrl.pose)
-        let origin = pose.columns.3.xyz
-        let dir = -pose.columns.2.xyz
-
-        var best: (Int, Float)?
+    private func firstRayHit(_ buttons: [MenuButton], layout: ButtonLayout,
+                             origin: SIMD3<Float>, dir: SIMD3<Float>) -> (index: Int, point: SIMD3<Float>)? {
+        var best: (Int, Float, SIMD3<Float>)?
         for (i, b) in buttons.enumerated() {
             let (pos, facing, half) = layout == .panel
                 ? panelButtonTransform(i, buttons: buttons)
@@ -434,10 +404,10 @@ final class XRHome: ObservableObject {
             let local = hit - pos
             let m = simd_float4x4(facing)
             if abs(dot(local, m.columns.0.xyz)) < half, abs(dot(local, m.columns.1.xyz)) < half {
-                if best == nil || t < best!.1 { best = (i, t) }
+                if best == nil || t < best!.1 { best = (i, t, hit) }
             }
         }
-        return best?.0
+        return best.map { (index: $0.0, point: $0.2) }
     }
 
     private func panelButtonTransform(_ i: Int, buttons: [MenuButton]) -> (SIMD3<Float>, simd_quatf, Float) {
@@ -491,34 +461,119 @@ final class XRHome: ObservableObject {
             var arr = XRCMath.floatArray(m)
             xrc_scene_push_panel(&arr, palmIconTexId, 1, 1, 1, 1, 1)
         }
-
-        handleGesture(headPos: headPos)
     }
 
-    /// Palm held flat + pinch (thumb-index tap) summons the floating settings
-    /// panel — the CardboardXR system gesture. Works in home and demo states.
-    private func handleGesture(headPos: SIMD3<Float>) {
-        var toggled = false
-        var consumedByUI = panelConsumedEdge
-        panelConsumedEdge = false
+    // MARK: - unified input router (CardboardXR PinchRouter pattern)
+    //
+    // Priority chain per pinch rising edge:
+    //   1. palm-flat pinch  -> toggle the floating settings panel
+    //   2. gazed button     -> activate (reticle marks the target)
+    //   3. pointer button   -> activate (laser beam from the pointing hand)
+    //   4. plain click      -> falls through (demo sabers handle contact)
+    //
+    // Hover: gaze ray first (primary input, like CardboardXR), pointer ray
+    // second. The reticle ring marks the gaze target; the laser only appears
+    // when the pointer hand is the one hovering.
+
+    private var lastRouterPinchDown = [false, false]
+
+    private func routeInput() {
+        guard state == .home || state == .demo else {
+            lastRouterPinchDown = [false, false]
+            return
+        }
+
+        let active: (buttons: [MenuButton], layout: ButtonLayout)?
+        if panelMirror {
+            active = (panelButtons, .panel)
+        } else if menuVisibleMirror, state == .home {
+            active = (menuButtons, .bar)
+        } else {
+            active = nil
+        }
+
+        // --- hover: gaze first, pointer second ---
+        var hoverList: [MenuButton]?
+        var hover: Int? = nil
+        var hitPoint: SIMD3<Float>? = nil
+        var viaGaze = false
+
+        if let a = active {
+            for b in a.buttons { b.hovered = false }
+            if let g = gazeRay(), let hit = firstRayHit(a.buttons, layout: a.layout, origin: g.0, dir: g.1) {
+                hoverList = a.buttons
+                hover = hit.index
+                hitPoint = hit.point
+                viaGaze = true
+            }
+            if hover == nil, let hand = bestPointerHand() {
+                var ctrl = xrc_controller_state()
+                _ = xrc_get_controller(hand, &ctrl)
+                if ctrl.is_tracked != 0 {
+                    let pose = XRCMath.fromXrc(ctrl.pose)
+                    let origin = pose.columns.3.xyz
+                    let dir = -pose.columns.2.xyz
+                    if let hit = firstRayHit(a.buttons, layout: a.layout, origin: origin, dir: dir) {
+                        hoverList = a.buttons
+                        hover = hit.index
+                        hitPoint = hit.point
+                        drawBeam(from: origin, dir: dir, to: hit.point)
+                    }
+                }
+            }
+            if let list = hoverList, let i = hover {
+                list[i].hovered = true
+            }
+            // gaze reticle (CardboardXR): ring at the target under the crosshair
+            if viaGaze, let hp = hitPoint, let headPose = core.headPose() {
+                let toward = normalize(headPose.columns.3.xyz - hp)
+                let m = XRCMath.model(translation: hp + toward * 0.012,
+                                      rotation: quatFacing(normal: toward),
+                                      scale: SIMD3<Float>(0.03, 0.03, 1))
+                var arr = XRCMath.floatArray(m)
+                xrc_scene_push_panel(&arr, reticleTexId, 0, 1, 1, 1, 1)
+            }
+        }
+
+        // --- pinch chain ---
         for h in 0..<Int(XRC_HAND_COUNT) {
             let s = core.handTracker.snapshot(for: Int32(h))
             let down = s.isTracked && s.buttons & UInt32(XRC_BTN_TRIGGER) != 0
-            let rising = down && !lastPinchDown[h]
-            lastPinchDown[h] = down
-            if rising, consumedByUI { consumedByUI = false; continue }
-            if rising, s.palmFlat, CACurrentMediaTime() - lastMenuToggle > 0.4 {
-                toggled = true
+            let rising = down && !lastRouterPinchDown[h]
+            lastRouterPinchDown[h] = down
+            guard rising else { continue }
+
+            // 1. palm gear
+            if s.palmFlat {
+                lastMenuToggle = CACurrentMediaTime()
+                panelMirror.toggle()
+                let v = panelMirror
+                DispatchQueue.main.async { self.panelVisible = v }
+                return
             }
+            // 2/3. gazed or pointed button
+            if let list = hoverList, let i = hover {
+                activate(list[i].action)
+                return
+            }
+            // 4. plain click falls through (demo contact interaction)
         }
-        guard toggled else { return }
-        lastMenuToggle = CACurrentMediaTime()
-        panelMirror.toggle()
-        let v = panelMirror
-        DispatchQueue.main.async { self.panelVisible = v }
     }
 
-    private var panelConsumedEdge = false
+    private func gazeRay() -> (origin: SIMD3<Float>, dir: SIMD3<Float>)? {
+        guard let headPose = core.headPose() else { return nil }
+        let dir = normalize(-headPose.columns.2.xyz)
+        return (headPose.columns.3.xyz, dir)
+    }
+
+    private func drawBeam(from origin: SIMD3<Float>, dir: SIMD3<Float>, to point: SIMD3<Float>) {
+        let along = max(simd_dot(point - origin, dir), 0.05)
+        let mid = origin + dir * (along * 0.5)
+        let bm = XRCMath.model(translation: mid, rotation: XRCMath.quatLooking(direction: dir),
+                               scale: SIMD3<Float>(0.005, 0.005, along))
+        var bArr = XRCMath.floatArray(bm)
+        xrc_scene_push_box(&bArr, 1.0, 0.85, 0.4, 0.9)
+    }
 
     private func buildMenuIfNeeded() {
         guard !menuBuilt else { return }
@@ -555,6 +610,10 @@ final class XRHome: ObservableObject {
         palmIconTexId = core.compositor.registerPanelTexture(icon.texture)
         palmIconRenderer = icon
 
+        let reticle = PanelTextRenderer(device: device, width: 128, height: 128, style: .reticle)
+        reticle.render(PanelTextRenderer.Content(title: "", accent: UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1)))
+        reticleTexId = core.compositor.registerPanelTexture(reticle.texture)
+
         menuBuilt = true
     }
 
@@ -580,9 +639,6 @@ final class XRHome: ObservableObject {
         let center = head + fwd * 0.72
         let origin = center - right * (spacing * Float(menuButtons.count - 1) * 0.5)
 
-        // hover via right-hand (fallback left) ray
-        let hover = hoverIndex(headPos: head)
-
         for (i, button) in menuButtons.enumerated() {
             var pos = origin + right * (spacing * Float(i))
             pos.y = barY
@@ -591,105 +647,7 @@ final class XRHome: ObservableObject {
             let scale = button.hovered ? buttonSize * 1.12 : buttonSize
             let m = XRCMath.model(translation: pos, rotation: facing, scale: SIMD3<Float>(scale, scale, 1))
             var arr = XRCMath.floatArray(m)
-            button.hovered = (hover == i)
             xrc_scene_push_panel(&arr, button.texId, button.hovered ? 1 : 0, 1, 1, 1, 1)
-
-            // hover-only laser (Quest style): beam from hand to the hovered button
-            if button.hovered, let beam = laserRay(hit: pos) {
-                let mid = beam.0 + beam.1 * (beam.2 * 0.5)
-                let bm = XRCMath.model(translation: mid, rotation: XRCMath.quatLooking(direction: beam.1),
-                                       scale: SIMD3<Float>(0.005, 0.005, beam.2))
-                var bArr = XRCMath.floatArray(bm)
-                xrc_scene_push_box(&bArr, 1.0, 0.85, 0.4, 0.9)
-            }
-            _ = towardUser
-        }
-
-        handleMenuInput(hover: hover)
-    }
-
-    private func laserRay(hit: SIMD3<Float>) -> (SIMD3<Float>, SIMD3<Float>, Float)? {
-        for h in [Int32(XRC_HAND_RIGHT), Int32(XRC_HAND_LEFT)] {
-            var ctrl = xrc_controller_state()
-            _ = xrc_get_controller(h, &ctrl)
-            guard ctrl.is_tracked != 0 else { continue }
-            let pose = XRCMath.fromXrc(ctrl.pose)
-            let origin = pose.columns.3.xyz
-            let dir = -pose.columns.2.xyz
-            let toHit = hit - origin
-            let along = simd_dot(toHit, dir)
-            if along > 0.05 {
-                return (origin, dir, min(along, 2.5))
-            }
-        }
-        return nil
-    }
-
-    /// Index of the hovered menu button (ray vs button quads), nil if none.
-    private func hoverIndex(headPos: SIMD3<Float>) -> Int? {
-        guard let hand = bestPointerHand() else { return nil }
-        var ctrl = xrc_controller_state()
-        _ = xrc_get_controller(hand, &ctrl)
-        guard ctrl.is_tracked != 0 else { return nil }
-        let pose = XRCMath.fromXrc(ctrl.pose)
-        let origin = pose.columns.3.xyz
-        let dir = -pose.columns.2.xyz
-
-        guard let headPose = core.headPose() else { return nil }
-        let head = headPose.columns.3.xyz
-        var fwd = -headPose.columns.2.xyz
-        fwd.y = 0
-        if simd_length(fwd) < 0.05 { fwd = SIMD3<Float>(0, 0, -1) }
-        fwd = normalize(fwd)
-        let floor = core.floorY ?? (head.y - 1.4)
-        let barY = max(floor + 0.55, head.y - 0.34)
-        let right = normalize(SIMD3<Float>(-fwd.z, 0, fwd.x))
-        let spacing: Float = 0.155
-        let half: Float = 0.07
-        let center = head + fwd * 0.72
-        let originBar = center - right * (spacing * Float(menuButtons.count - 1) * 0.5)
-
-        var best: (Int, Float)?
-        for (i, _) in menuButtons.enumerated() {
-            var pos = originBar + right * (spacing * Float(i))
-            pos.y = barY
-            let normal = normalize(SIMD3<Float>((head - pos).x, 0.18, (head - pos).z))
-            let d = dot(normal, dir)
-            guard abs(d) > 1e-4 else { continue }
-            let t = dot(normal, pos - origin) / d
-            guard t > 0.05, t < 2.0 else { continue }
-            let hit = origin + dir * t
-            let local = hit - pos
-            let m = simd_float4x4(quatFacing(normal: normal))
-            if abs(dot(local, m.columns.0.xyz)) < half, abs(dot(local, m.columns.1.xyz)) < half {
-                if best == nil || t < best!.1 {
-                    best = (i, t)
-                }
-            }
-        }
-        return best?.0
-    }
-
-    private func bestPointerHand() -> Int32? {
-        let r = core.handTracker.snapshot(for: Int32(XRC_HAND_RIGHT))
-        if r.isTracked { return Int32(XRC_HAND_RIGHT) }
-        let l = core.handTracker.snapshot(for: Int32(XRC_HAND_LEFT))
-        if l.isTracked { return Int32(XRC_HAND_LEFT) }
-        return nil
-    }
-
-    private func handleMenuInput(hover: Int?) {
-        guard let hover = hover else { return }
-        // Trigger rising edge while hovering activates (Quest pointer click).
-        for h in 0..<Int(XRC_HAND_COUNT) {
-            let s = core.handTracker.snapshot(for: Int32(h))
-            let down = s.isTracked && s.buttons & UInt32(XRC_BTN_TRIGGER) != 0
-            let rising = down && !lastPinchDown[h]
-            lastPinchDown[h] = down
-            if rising {
-                activate(menuButtons[hover].action)
-                return
-            }
         }
     }
 

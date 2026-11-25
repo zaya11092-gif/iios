@@ -3,7 +3,6 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject private var session = SessionController.shared
     @ObservedObject private var home = XRHome.shared
-    @ObservedObject private var settings = XRSettings.shared
 
     var body: some View {
         ZStack {
@@ -12,11 +11,9 @@ struct ContentView: View {
             if session.inVR {
                 VRContainerView()
                     .ignoresSafeArea()
-                if session.paused && settings.phoneMode {
-                    // 2D overlays are only usable hand-held; in goggles the
-                    // in-VR floating panel (XRHome) is the pause/settings UI.
-                    PauseMenuView()
-                } else if home.uiState == .scanning {
+                // Pause/settings live in the in-VR floating panel (XRHome) in
+                // both Phone Mode and goggles — no 2D overlay in session.
+                if home.uiState == .scanning {
                     ScanOverlayView()
                 } else if home.uiState == .demo {
                     HudOverlay()
