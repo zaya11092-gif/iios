@@ -100,7 +100,7 @@ final class PCBridge {
         var d = Data([0x49, 0x49, 0x4F, 0x53, 0x01]) // IIOS + hello
         d.append(UInt16(1).littleEndianData)
         d.append(Array("iios iphone".utf8))
-        d.append(0)
+        d.append(UInt8(0))
         send(d)
     }
 
@@ -131,7 +131,10 @@ final class PCBridge {
         let triggerBits: [UInt8] = [ctrlButtonBits(hand: 0), ctrlButtonBits(hand: 1)]
 
         var d = Data([0x49, 0x49, 0x4F, 0x53, 0x02])
-        floats.forEach { d.append(contentsOf: $0.bitPattern.littleEndian) }
+        for f in floats {
+            var v = f.bitPattern.littleEndian
+            withUnsafeBytes(of: &v) { d.append(contentsOf: $0) }
+        }
         d.append(contentsOf: triggerBits)
         send(d)
     }
