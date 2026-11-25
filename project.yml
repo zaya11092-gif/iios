@@ -25,6 +25,7 @@ targets:
       - path: app
       - path: xrcore
       - path: demo-game
+      - path: alvr-client
     info:
       path: app/Info.plist
       properties:
