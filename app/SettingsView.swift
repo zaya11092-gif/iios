@@ -76,6 +76,25 @@ struct SettingsView: View {
                         Text("Forget saved room scan")
                     }
                 }
+                Section("Windows layer (Phase 3, experimental)") {
+                    HStack {
+                        Text("Game path")
+                        TextField("C:\\...\\game.exe", text: $s.winExePath)
+                            .multilineTextAlignment(.trailing)
+                            .font(.system(.caption2, design: .monospaced))
+                            .autocorrectionDisabled()
+                    }
+                    HStack {
+                        Text("Layer status")
+                        Spacer()
+                        Text(WindowsHost.shared.status.label)
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("The FEX + Wine + DXMT layer is built separately (windows/build-layer.sh, or the windows-layer CI workflow) and embedded in the app. Until then the Windows button reports 'no layer'. See docs/ONDEVICE-STEAM.md.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             .navigationTitle("Settings")
             .toolbar {

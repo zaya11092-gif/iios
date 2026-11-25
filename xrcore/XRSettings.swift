@@ -53,6 +53,9 @@ final class XRSettings: ObservableObject {
     @Published var pcPort: Int = XRSettings.i("pcPort", 9100) { didSet { XRSettings.shared.setI(pcPort, "pcPort") } }
     @Published var showJointDots: Bool = XRSettings.b("showJointDots", true) { didSet { XRSettings.shared.setB(showJointDots, "showJointDots") } }
 
+    // On-device Windows layer (Phase 3)
+    @Published var winExePath: String = udString("winExePath", "C:\\Program Files (x86)\\Steam\\steamapps\\common\\") { didSet { UserDefaults.standard.set(winExePath, forKey: "winExePath") } }
+
     private static func udString(_ key: String, _ def: String) -> String {
         UserDefaults.standard.object(forKey: key) as? String ?? def
     }

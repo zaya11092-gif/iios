@@ -1,0 +1,36 @@
+name: windows-layer
+
+# Phase 3 (on-device SteamVR) build job. Manual for now: the full FEX+Wine+
+# DXMT layer takes hours and the recipes live in the vendored forks' docs
+# (same forks Madeira pins). The shim stage is fast and always builds.
+on:
+  workflow_dispatch:
+
+jobs:
+  shim:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install llvm-mingw
+        run: |
+          brew install llvm-mingw || true
+          # brew formula fallback: use the release tarball if the formula is absent
+          if ! command -v x86_64-w64-mingw32-gcc >/dev/null; then
+            curl -L -o /tmp/llvm-mingw.tar.xz \
+              https://github.com/mstorsjo/llvm-mingw/releases/download/20241030/llvm-mingw-20241030-ucrt-macos-universal.tar.xz
+            mkdir -p /opt/llvm-mingw
+            tar -xf /tmp/llvm-mingw.tar.xz -C /opt/llvm-mingw --strip-components=1
+          fi
+
+      - name: Build OpenXR shim
+        run: |
+          export PATH="/opt/llvm-mingw/bin:$PATH"
+          ./windows/build-layer.sh shim
+
+      - name: Upload shim
+        uses: actions/upload-artifact@v4
+        with:
+          name: openxr-shim-dll
+          path: windows/dist/shim/openxr_loader.dll

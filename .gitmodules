@@ -1,0 +1,15 @@
+[submodule "windows/vendor/FEX"]
+	path = windows/vendor/FEX
+	url = https://github.com/willfaust/FEX.git
+	branch = ios-port-2607
+[submodule "windows/vendor/dxmt"]
+	path = windows/vendor/dxmt
+	url = https://github.com/willfaust/dxmt.git
+	branch = ios-port
+[submodule "windows/vendor/OpenXR-SDK"]
+	path = windows/vendor/OpenXR-SDK
+	url = https://github.com/KhronosGroup/OpenXR-SDK.git
+[submodule "windows/vendor/wine"]
+	path = windows/vendor/wine
+	url = https://github.com/willfaust/wine.git
+	branch = madeira-lgpl

@@ -49,7 +49,7 @@ final class XRHome: ObservableObject {
         var texId: Int32 = 0
         var hovered = false
 
-        enum Action { case goHome, startDemo, toggleVR, toggleStream, rescanRoom, exitVR }
+        enum Action { case goHome, startDemo, toggleVR, toggleStream, rescanRoom, launchWindows, exitVR }
 
         init(action: Action, renderer: PanelTextRenderer) {
             self.action = action
@@ -62,6 +62,7 @@ final class XRHome: ObservableObject {
     private var palmIconTexId: Int32 = 0
     private var streamButtonIndex: Int = -1
     private var vrButtonIndex: Int = -1
+    private var windowsButtonIndex: Int = -1
 
     private var settings: XRSettings { XRSettings.shared }
     private let core = XRCore.shared
@@ -345,12 +346,14 @@ final class XRHome: ObservableObject {
         let demo = makeButton(.startDemo, title: "Beat Demo", accent: orange)
         let vr = makeButton(.toggleVR, title: "VR Mode", status: "OFF", accent: blue)
         let pc = makeButton(.toggleStream, title: "PC Stream", status: PCBridge.shared.status.label, accent: blue)
+        let windows = makeButton(.launchWindows, title: "Windows", status: WindowsHost.shared.status.label, accent: UIColor(red: 0.55, green: 0.35, blue: 1.0, alpha: 1))
         let rescan = makeButton(.rescanRoom, title: "Rescan", accent: blue)
         let exit = makeButton(.exitVR, title: "Exit", accent: red)
 
-        menuButtons = [home, demo, vr, pc, rescan, exit]
+        menuButtons = [home, demo, vr, pc, windows, rescan, exit]
         vrButtonIndex = 2
         streamButtonIndex = 3
+        windowsButtonIndex = 4
 
         let icon = PanelTextRenderer(device: device, width: 128, height: 128, style: .menuIcon)
         icon.render(PanelTextRenderer.Content(title: "", accent: orange))
@@ -523,6 +526,16 @@ final class XRHome: ObservableObject {
             }
         case .rescanRoom:
             DispatchQueue.main.async { self.startScan() }
+        case .launchWindows:
+            DispatchQueue.main.async {
+                WindowsHost.shared.launch(exePath: self.settings.winExePath)
+                if self.windowsButtonIndex >= 0 {
+                    let b = self.menuButtons[self.windowsButtonIndex]
+                    b.renderer.render(PanelTextRenderer.Content(
+                        title: "Windows", statusLine: WindowsHost.shared.status.label,
+                        accent: UIColor(red: 0.55, green: 0.35, blue: 1.0, alpha: 1)))
+                }
+            }
         case .exitVR:
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .xrcExitRequested, object: nil)
