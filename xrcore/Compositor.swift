@@ -251,7 +251,7 @@ final class Compositor {
             // Unbounded cache growth = jetsam crash; flush stale entries every ~2 s.
             cvFlushCounter &+= 1
             if cvFlushCounter % 120 == 0, let cache = cvCache {
-                CVMetalTextureCacheFlush(cache, 0, nil)
+                CVMetalTextureCacheFlush(cache, 0)
             }
         }
         var mode = Float(sceneBackgroundMode)
@@ -358,9 +358,9 @@ final class Compositor {
                     enc.setVertexBuffer(mesh.vertexBuffer, offset: 0, index: 0)
                     enc.setVertexBytes(&vu, length: MemoryLayout<ItemUniforms>.size, index: 1)
                     enc.setFragmentBytes(&fu, length: MemoryLayout<ItemFragUniforms>.size, index: 0)
-                    if item.color.a < 0.99 { enc.setDepthStencilState(depthStateNoWrite) }
+                    if item.color.w < 0.99 { enc.setDepthStencilState(depthStateNoWrite) }
                     enc.drawPrimitives(type: MTLPrimitiveType.triangle, vertexStart: 0, vertexCount: mesh.vertexCount)
-                    if item.color.a < 0.99 { enc.setDepthStencilState(depthStateWrite) }
+                    if item.color.w < 0.99 { enc.setDepthStencilState(depthStateWrite) }
                 }
                 enc.endEncoding()
             }
