@@ -36,6 +36,7 @@ struct DistortionUniforms {
     float2 k1k2;         // barrel compensation coefficients
     float2 grid;         // (cols, rows) per eye
     float  timewarpOn;
+    float  mono;         // 1 = phone mode: full-screen single view, no lens warp
 };
 
 // ---------------------------------------------------------------------------
@@ -80,7 +81,12 @@ fragment float4 bgFragment(BgOut in [[stage_in]],
     } else if (u.bgMode > 0.5) {
         rgb = float3(0.02, 0.02, 0.045);                     // dark VR backdrop
     } else {
-        float2 suv = u.uvOffset + in.uv * u.uvScale;
+        // Camera-image sampling. The screen quad's uv.y grows upward while the
+        // ARKit buffer's uv.y grows downward (top-left origin), so flip y —
+        // without this the passthrough is upside down.
+        float2 suv = float2(u.uvOffset.x + in.uv.x * u.uvScale.x,
+                            u.uvOffset.y + in.uv.y * u.uvScale.y);
+        suv.y = 1.0 - suv.y;
         if (u.flipH > 0.5) { suv.x = 1.0 - suv.x; }
         if (u.flipV > 0.5) { suv.y = 1.0 - suv.y; }
         constexpr sampler s(filter::linear, address::clamp_to_edge);
@@ -208,6 +214,13 @@ vertex DOut distortVertex(uint vid [[vertex_id]],
     float2 d = w * (1.0 + u.k1k2.x * r2 + u.k1k2.y * r2 * r2);
 
     DOut o;
+    if (u.mono > 0.5) {
+        // Phone mode: single undistorted view across the whole screen.
+        o.uv = 0.5 + 0.5 * w;
+        o.eye = 0.0;
+        o.pos = float4(local.x * 2.0 - 1.0, local.y * 2.0 - 1.0, 0.0, 1.0);
+        return o;
+    }
     o.uv = 0.5 + 0.5 * d;
     o.eye = float(eye);
     float clipX = local.x - (eye == 0 ? 1.0 : 0.0);

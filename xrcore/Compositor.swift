@@ -34,6 +34,7 @@ struct DistortionUniforms {
     var k1k2 = SIMD2<Float>()
     var grid = SIMD2<Float>()
     var timewarpOn: Float = 1
+    var mono: Float = 0
 }
 
 // Compositor — three-pass stereo renderer:
@@ -66,6 +67,7 @@ final class Compositor {
     private var depthTexL: MTLTexture!
     private var depthTexR: MTLTexture!
     private var rtSize = CGSize.zero
+    private var rtMono = false
 
     private var jointsBuffer: MTLBuffer!
 
@@ -205,10 +207,13 @@ final class Compositor {
     }
 
     func resize(to size: CGSize) {
-        let w = max(Int(size.width) / 2, 8)
+        let mono = settings.phoneMode
+        guard rtSize != size || rtMono != mono else { return }
+        let w = max(mono ? Int(size.width) : Int(size.width) / 2, 8)
         let h = max(Int(size.height), 8)
-        guard rtSize != size, w > 8, h > 8 else { return }
+        guard w > 8, h > 8 else { return }
         rtSize = size
+        rtMono = mono
         sceneTexL = makeTex(width: w, height: h, format: .bgra8Unorm, usage: [.renderTarget, .shaderRead])
         sceneTexR = makeTex(width: w, height: h, format: .bgra8Unorm, usage: [.renderTarget, .shaderRead])
         depthTexL = makeTex(width: w, height: h, format: .depth32Float, usage: .renderTarget)
@@ -236,8 +241,9 @@ final class Compositor {
               let cmd = queue.makeCommandBuffer() else { return }
 
         let size = view.drawableSize
-        if rtSize != size { resize(to: size) }
-        let eyeW = max(Int(size.width) / 2, 8)
+        let mono = settings.phoneMode
+        if rtSize != size || rtMono != mono { resize(to: size) }
+        let eyeW = max(mono ? Int(size.width) : Int(size.width) / 2, 8)
         let eyeH = max(Int(size.height), 8)
         lastEyeAspect = Float(eyeW) / Float(eyeH)
 
@@ -261,9 +267,9 @@ final class Compositor {
         let bindLuma = lumaTex ?? dummyLuma
         let bindChroma = chromaTex ?? dummyChroma
 
-        // --- per-eye head poses (IPD offset along camera-right) ---
+        // --- per-eye head poses (IPD offset along camera-right; none in mono) ---
         let head = arFrame.camera.transform
-        let off = Float(settings.ipdMM) / 2000.0
+        let off = mono ? 0 : Float(settings.ipdMM) / 2000.0
         var poseL = head
         poseL.columns.3 = SIMD4<Float>(head.columns.3.xyz + head.columns.0.xyz * (-off), 1)
         var poseR = head
@@ -307,6 +313,7 @@ final class Compositor {
         du.k1k2 = SIMD2<Float>(Float(settings.lensK1), Float(settings.lensK2))
         du.grid = SIMD2<Float>(Float(gridCols), Float(gridRows))
         du.timewarpOn = settings.timewarp ? 1 : 0
+        du.mono = mono ? 1 : 0
 
         let lightDir = SIMD4<Float>(normalize(SIMD3<Float>(0.3, 1.0, -0.4)), 0)
 
@@ -320,8 +327,11 @@ final class Compositor {
         }
         texLock.unlock()
 
-        // --- pass 1 + 2 per eye ---
-        for (eye, sceneTex, depthTex) in [(0, sceneTexL!, depthTexL!), (1, sceneTexR!, depthTexR!)] {
+        // --- pass 1 + 2 per eye (single pass in phone mode) ---
+        let eyeTargets: [(Int, MTLTexture, MTLTexture)] = mono
+            ? [(0, sceneTexL!, depthTexL!)]
+            : [(0, sceneTexL!, depthTexL!), (1, sceneTexR!, depthTexR!)]
+        for (eye, sceneTex, depthTex) in eyeTargets {
             let eyePose = eye == 0 ? poseL : poseR
             let viewM = eyePose.inverse
 

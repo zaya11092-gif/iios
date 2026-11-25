@@ -51,6 +51,37 @@ final class HandTracker {
     private static let minDistance: Float = 0.15
     private static let maxDistance: Float = 0.70
 
+    // Canonical joint order for skeleton data (indices into snapshot.joints).
+    static let jointOrder: [VNHumanHandPoseObservation.JointName] = [
+        .wrist,
+        .thumbCMC, .thumbMP, .thumbIP, .thumbTip,
+        .indexMCP, .indexPIP, .indexDIP, .indexTip,
+        .middleMCP, .middlePIP, .middleDIP, .middleTip,
+        .ringMCP, .ringPIP, .ringDIP, .ringTip,
+        .littleMCP, .littlePIP, .littleDIP, .littleTip,
+    ]
+    private static let jointIndex: [VNHumanHandPoseObservation.JointName: Int] = {
+        var d: [VNHumanHandPoseObservation.JointName: Int] = [:]
+        for (i, n) in jointOrder.enumerated() { d[n] = i }
+        return d
+    }()
+
+    /// Bone connectivity for the wireframe overlay (index pairs into jointOrder).
+    static let bonePairs: [(Int, Int)] = [
+        // thumb
+        (0, 1), (1, 2), (2, 3), (3, 4),
+        // index
+        (0, 5), (5, 6), (6, 7), (7, 8),
+        // middle
+        (0, 9), (9, 10), (10, 11), (11, 12),
+        // ring
+        (0, 13), (13, 14), (14, 15), (15, 16),
+        // little
+        (0, 17), (17, 18), (18, 19), (19, 20),
+        // knuckle web
+        (5, 9), (9, 13), (13, 17),
+    ]
+
     // MARK: - entry point
 
     /// Called from the ARSession delegate; hops to the hand queue and returns
@@ -254,11 +285,25 @@ final class HandTracker {
             let dist = clampF(st.distance.filter(rawDist, at: t),
                               HandTracker.minDistance, HandTracker.maxDistance)
 
-            // 3D joints (planar approximation: shared depth).
-            let wrist3 = camPos + dir(.wrist) * dist
-            let indexMCP3 = camPos + dir(.indexMCP) * dist
-            let littleMCP3 = camPos + dir(.littleMCP) * dist
-            let middleMCP3 = camPos + dir(.middleMCP) * dist
+            // 3D joints (planar approximation: shared depth) — all 21 for the
+            // skeleton overlay + palm pose.
+            var joints3D = [SIMD3<Float>](repeating: .zero, count: HandTracker.jointOrder.count)
+            for (name, pt) in j {
+                guard let idx = HandTracker.jointIndex[name] else { continue }
+                joints3D[idx] = camPos + dir(name) * dist
+            }
+            let wrist3 = joints3D[0]
+            let indexMCP3 = joints3D[5]
+            let littleMCP3 = joints3D[17]
+            let middleMCP3 = joints3D[9]
+
+            // Palm-flat pose (palm facing up or down, fingers roughly
+            // horizontal) — shows the pinch indicator and arms the menu
+            // gesture, like the Quest system gesture.
+            let palmSpanVec = indexMCP3 - littleMCP3
+            let fingersUp = normalize(middleMCP3 - wrist3)
+            let palmNormal = normalize(cross(palmSpanVec, middleMCP3 - wrist3))
+            let palmFlat = abs(palmNormal.y) > 0.5 && abs(fingersUp.y) < 0.6
 
             // Palm-forward direction: wrist -> middle knuckle, smoothed.
             let rawForward = normalize(middleMCP3 - wrist3)
@@ -297,6 +342,9 @@ final class HandTracker {
             s.confidence = obs.confidence
             s.handScale = dist
             s.isTracked = true
+            s.palmFlat = palmFlat
+            s.joints = joints3D
+            s.hasJoints = true
             s.pose = XRCMath.model(translation: wrist, rotation: XRCMath.quatLooking(direction: forward))
             newSnaps[slot] = s
 

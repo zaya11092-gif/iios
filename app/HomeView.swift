@@ -2,6 +2,7 @@ import SwiftUI
 
 struct HomeView: View {
     @ObservedObject private var session = SessionController.shared
+    @ObservedObject private var settings = XRSettings.shared
     @State private var showSettings = false
 
     var body: some View {
@@ -27,7 +28,8 @@ struct HomeView: View {
                     Button {
                         session.enterVR()
                     } label: {
-                        Label("Enter VR", systemImage: "visionpro")
+                        Label(settings.phoneMode ? "Enter AR" : "Enter VR",
+                              systemImage: settings.phoneMode ? "iphone" : "visionpro")
                             .font(.title2.bold())
                             .frame(maxWidth: 260)
                     }
@@ -35,7 +37,16 @@ struct HomeView: View {
                     .controlSize(.large)
                     .disabled(!session.deviceSupported)
 
-                    Text("Strap the phone into VR goggles (landscape, camera out).\nBoth triggers (pinch both hands) opens the menu.")
+                    Toggle(isOn: $settings.phoneMode) {
+                        Label("Phone Mode", systemImage: "iphone")
+                            .font(.subheadline)
+                    }
+                    .toggleStyle(.button)
+                    .fixedSize()
+
+                    Text(settings.phoneMode
+                         ? "Single view for hand-held use — no goggles needed."
+                         : "Strap the phone into VR goggles (landscape, camera out).\nPalm up + pinch = menu · Menu → VR Mode toggles the 3D home.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -46,11 +57,11 @@ struct HomeView: View {
                 // Right: quick glance panel
                 VStack(alignment: .leading, spacing: 10) {
                     panelRow(icon: "hand.raised", title: "Hands = controllers",
-                             detail: "Pinch index = trigger · curl fingers = grip · pinch thumb+middle = A")
-                    panelRow(icon: "camera", title: "Passthrough",
-                             detail: "Monoscopic rear-camera video background")
+                             detail: "Palm up shows the menu icon · pinch = trigger/select")
+                    panelRow(icon: "camera", title: "Passthrough / VR Mode",
+                             detail: "Toggle the full 3D home from the menu bar (VR button)")
                     panelRow(icon: "waveform.path", title: "Tracking",
-                             detail: "ARKit 6DoF SLAM · Vision 21-joint hand pose")
+                             detail: "ARKit 6DoF SLAM · Vision 21-joint hand skeleton")
                     Button("Settings & Calibration") {
                         showSettings = true
                     }

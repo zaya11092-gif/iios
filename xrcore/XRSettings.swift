@@ -38,8 +38,11 @@ final class XRSettings: ObservableObject {
     @Published var timewarp: Bool = XRSettings.b("timewarp", true) { didSet { XRSettings.shared.setB(timewarp, "timewarp") } }
 
     // Debug
-    @Published var showJoints: Bool = XRSettings.b("showJoints", true) { didSet { XRSettings.shared.setB(showJoints, "showJoints") } }
+    @Published var showJoints: Bool = XRSettings.b("showJoints", false) { didSet { XRSettings.shared.setB(showJoints, "showJoints") } }
     @Published var showStats: Bool = XRSettings.b("showStats", true) { didSet { XRSettings.shared.setB(showStats, "showStats") } }
+
+    // Phone mode: single (non-split) view for hand-held use, no stereo/IPD/lens warp.
+    @Published var phoneMode: Bool = XRSettings.b("phoneMode", false) { didSet { XRSettings.shared.setB(phoneMode, "phoneMode") } }
 
     // Demo game
     @Published var demoSpeed: Double = XRSettings.d("demoSpeed", 1.0) { didSet { XRSettings.shared.setD(demoSpeed, "demoSpeed") } }

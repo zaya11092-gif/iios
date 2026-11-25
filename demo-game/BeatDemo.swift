@@ -128,9 +128,7 @@ final class BeatDemo {
         cubeCount = cubes.count
         if hitFlash > 0 { hitFlash -= dt }
 
-        // --- draw through the scene API ---
-        xrc_scene_begin()
-
+        // --- draw (XRHome owns scene begin/end; we only push items) ---
         let leftColor = SIMD4<Float>(1.0, 0.25, 0.25, 1)
         let rightColor = SIMD4<Float>(0.3, 0.5, 1.0, 1)
         for cube in cubes {
@@ -175,8 +173,6 @@ final class BeatDemo {
             var la = XRCMath.floatArray(mLine)
             xrc_scene_push_box(&la, gridColor.x, gridColor.y, gridColor.z, 1)
         }
-
-        xrc_scene_end()
     }
 
     // MARK: helpers

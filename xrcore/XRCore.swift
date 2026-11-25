@@ -20,6 +20,11 @@ struct ControllerSnapshot {
     var confidence: Float = 0
     var handScale: Float = 0
     var isTracked = false
+    // 21 joint positions in HandTracker.jointOrder (zeros where missing).
+    var joints: [SIMD3<Float>] = []
+    var hasJoints = false
+    // Palm held flat (up or down) — the Quest-style menu/pinch-indicator pose.
+    var palmFlat = false
 }
 
 // Lightweight FPS meters.
