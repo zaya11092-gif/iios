@@ -13,3 +13,6 @@
 	path = windows/vendor/wine
 	url = https://github.com/willfaust/wine.git
 	branch = madeira-lgpl
+[submodule "unity/CardboardXR"]
+	path = unity/CardboardXR
+	url = https://github.com/brenpoly/CardboardXR.git
