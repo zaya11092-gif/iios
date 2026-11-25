@@ -55,13 +55,13 @@ final class PanelTextRenderer {
 
         let w = CGFloat(width), h = CGFloat(height)
 
-        // Card background
+        // Card background — Material 3 dark surface (#1C1B1F ≈ 0.11/0.106/0.12)
         let bgRect = CGRect(x: 6, y: 6, width: w - 12, height: h - 12)
-        let corner: CGFloat = style == .card ? 26 : 22
+        let corner: CGFloat = style == .card ? 26 : 28
         let path = UIBezierPath(roundedRect: bgRect, cornerRadius: corner)
-        UIColor(red: 0.07, green: 0.08, blue: 0.11, alpha: 0.94).setFill()
+        UIColor(red: 0.110, green: 0.106, blue: 0.122, alpha: 0.96).setFill()
         path.fill()
-        UIColor(white: 1, alpha: 0.10).setStroke()
+        UIColor(white: 1, alpha: 0.08).setStroke()
         path.lineWidth = 2
         path.stroke()
 

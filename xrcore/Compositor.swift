@@ -68,6 +68,7 @@ final class Compositor {
     private var depthTexR: MTLTexture!
     private var rtSize = CGSize.zero
     private var rtMono = false
+    private var rtScale: Float = 0
 
     private var jointsBuffer: MTLBuffer!
 
@@ -208,12 +209,17 @@ final class Compositor {
 
     func resize(to size: CGSize) {
         let mono = settings.phoneMode
-        guard rtSize != size || rtMono != mono else { return }
-        let w = max(mono ? Int(size.width) : Int(size.width) / 2, 8)
-        let h = max(Int(size.height), 8)
+        let scale = min(max(Float(settings.renderScale), 0.5), 1.0)
+        guard rtSize != size || rtMono != mono || rtScale != scale else { return }
+        // renderScale launch option: per-eye resolution scale (renders at RT
+        // resolution, distortion pass upscales to the drawable).
+        let baseW = mono ? Int(size.width) : Int(size.width) / 2
+        let w = max(Int(Float(baseW) * scale), 8)
+        let h = max(Int(Float(size.height) * scale), 8)
         guard w > 8, h > 8 else { return }
         rtSize = size
         rtMono = mono
+        rtScale = scale
         sceneTexL = makeTex(width: w, height: h, format: .bgra8Unorm, usage: [.renderTarget, .shaderRead])
         sceneTexR = makeTex(width: w, height: h, format: .bgra8Unorm, usage: [.renderTarget, .shaderRead])
         depthTexL = makeTex(width: w, height: h, format: .depth32Float, usage: .renderTarget)
@@ -242,7 +248,8 @@ final class Compositor {
 
         let size = view.drawableSize
         let mono = settings.phoneMode
-        if rtSize != size || rtMono != mono { resize(to: size) }
+        let scale = min(max(Float(settings.renderScale), 0.5), 1.0)
+        if rtSize != size || rtMono != mono || rtScale != scale { resize(to: size) }
         let eyeW = max(mono ? Int(size.width) : Int(size.width) / 2, 8)
         let eyeH = max(Int(size.height), 8)
         lastEyeAspect = Float(eyeW) / Float(eyeH)

@@ -56,6 +56,14 @@ final class XRSettings: ObservableObject {
     // On-device Windows layer (Phase 3)
     @Published var winExePath: String = udString("winExePath", "C:\\Program Files (x86)\\Steam\\steamapps\\common\\") { didSet { UserDefaults.standard.set(winExePath, forKey: "winExePath") } }
 
+    // Launch options (CardboardXR-style)
+    /// Hand-tracking update rate (Hz). Lower saves CPU/thermal budget.
+    @Published var handHz: Int = XRSettings.i("handHz", 30) { didSet { XRSettings.shared.setI(handHz, "handHz") } }
+    /// Head-pose prediction horizon (ms) applied to the timewarp.
+    @Published var predictionMs: Double = XRSettings.d("predictionMs", 8.3) { didSet { XRSettings.shared.setD(predictionMs, "predictionMs") } }
+    /// Per-eye render scale (0.6..1.0 of native drawable resolution).
+    @Published var renderScale: Double = XRSettings.d("renderScale", 1.0) { didSet { XRSettings.shared.setD(renderScale, "renderScale") } }
+
     private static func udString(_ key: String, _ def: String) -> String {
         UserDefaults.standard.object(forKey: key) as? String ?? def
     }

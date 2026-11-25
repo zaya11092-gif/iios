@@ -43,6 +43,20 @@ struct SettingsView: View {
                     Toggle("Show hand joints on passthrough", isOn: $s.showJoints)
                     Toggle("Show stats HUD", isOn: $s.showStats)
                 }
+                Section("Launch options") {
+                    Picker("Hand tracking rate", selection: $s.handHz) {
+                        Text("30 Hz").tag(30)
+                        Text("20 Hz").tag(20)
+                        Text("15 Hz").tag(15)
+                    }
+                    sliderRow("Prediction (ms)", value: $s.predictionMs, in: 0...40, format: "%.1f")
+                    sliderRow("Render scale", value: $s.renderScale, in: 0.6...1.0, format: "%.2f")
+                }
+                Section("Session log") {
+                    NavigationLink("View session log") {
+                        SessionLogView()
+                    }
+                }
                 Section("Demo game") {
                     sliderRow("Cube speed", value: $s.demoSpeed, in: 0.3...2.5, format: "%.2f")
                     sliderRow("Spawn rate (per s)", value: $s.demoSpawnRate, in: 0.2...3.0, format: "%.2f")

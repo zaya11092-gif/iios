@@ -4,17 +4,21 @@ import Metal
 import simd
 import UIKit
 
-// XRHome — the OS shell: Quest-style system gesture (palm up + pinch opens
-// the menu bar), universal menu bar with a VR Mode toggle, hand skeleton
-// wireframe in immersive mode, and the Quest-look room scan (blue grid mesh).
+// XRHome — the OS shell, ported 1:1 from brenpoly/CardboardXR's UX (Apache-2.0):
 //
-// States:
-//   scanning — passthrough + Quest-blue grid over detected planes.
-//   home     — menu bar; background is the VR environment (vrMode on) or
-//              passthrough (vrMode off).
-//   demo     — BeatDemo gameplay; menu bar appears on the system gesture.
+//   * gaze + pinch with reticle (primary input) + PinchRouter priority chain
+//     (palm gear -> gazed button -> pointer button -> plain click)
+//   * palm-summoned floating settings panel with lazy follow and X close
+//   * app-library home: tiles grid, gaze-to-preview, pinch to open
+//   * room scan on startup: continuous surface detection until convergence,
+//     Skip button, SHORT re-scan (floor only) on re-entries, and a Scan Room
+//     toggle in the settings panel that "scans again, or ends a scan"
+//   * boundary grids drawn on detected surfaces in VR (their boundaryCm
+//     warning) and the checkerboard lobby floor
+//   * hand skeleton wireframe while immersive
 //
-// Owns the xrc frame callback and the whole scene-item lifecycle.
+// States: scanning / home / demo. Owns the xrc frame callback and the whole
+// scene-item lifecycle.
 final class XRHome: ObservableObject {
 
     static let shared = XRHome()
@@ -30,20 +34,19 @@ final class XRHome: ObservableObject {
     @Published var roomScanSaved = false
     /// VR Mode: full 3D environment (skeleton hands) vs passthrough.
     @Published var vrMode = false
-    /// Universal menu bar visibility (home state shows it by default).
-    @Published var menuVisible = true
-    /// CardboardXR-style floating settings panel (palm-up pinch / both-triggers).
+    /// Floating settings panel visibility (palm pinch / both-triggers / X).
     @Published var panelVisible = false
 
     private var state: UIState = .booting            // render-thread mirror
     private var vrModeMirror = false                 // render-thread mirror
-    private var menuVisibleMirror = true
     private var scanStartedAt: Double = 0
     private var scanDwellOK: Double = 0
+    private var shortScan = false                    // CardboardXR: re-entry scans run until floor only
     private var lastMenuToggle: Double = 0
-    private var menuBuilt = false
+    private var uiBuilt = false
+    private var lastRouterPinchDown = [false, false]
 
-    // Menu bar buttons (world-relative to head each frame).
+    // Buttons drive the app-library tiles and the settings panel.
     private final class MenuButton {
         let action: Action
         let renderer: PanelTextRenderer
@@ -59,19 +62,19 @@ final class XRHome: ObservableObject {
         }
     }
 
-    private var menuButtons: [MenuButton] = []
+    private var libraryButtons: [MenuButton] = []    // app-library home tiles
+    private var panelButtons: [MenuButton] = []      // floating settings panel
     private var palmIconRenderer: PanelTextRenderer!
     private var palmIconTexId: Int32 = 0
-    private var streamButtonIndex: Int = -1
-    private var vrButtonIndex: Int = -1
-    private var windowsButtonIndex: Int = -1
     private var reticleTexId: Int32 = 0
 
-    // Floating settings panel (lazy-follow, CardboardXR-style).
-    private var panelButtons: [MenuButton] = []
-    private var panelBuilt = false
+    // Floating panels share one lazy-follow implementation.
+    private var panelButtonsBuilt = false
+    private var libraryBuilt = false
     private var panelPos = SIMD3<Float>(0, 1.2, -0.65)
     private var panelFacing = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+    private var libPos = SIMD3<Float>(0, 1.2, -0.65)
+    private var libFacing = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
     private var lastPanelT: Double = 0
     private var panelMirror = false
 
@@ -87,36 +90,33 @@ final class XRHome: ObservableObject {
 
         if RoomStore.shared.hasMap {
             setState(.home)
-            buildMenuIfNeeded()
-            // If the saved room map fails to relocalize (no surfaces within
-            // 3 s), fall back to a fresh scan.
+            // CardboardXR: re-entries run only a SHORT scan until the floor
+            // is found (saves CPU for hand tracking). If the restored map
+            // produced no floor within 3 s, run it.
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
                 guard let self = self, self.state == .home else { return }
                 if self.core.planeCounts.horizontal == 0 {
-                    self.startScan()
+                    self.startScan(short: true)
                 }
             }
         } else {
-            startScan()
+            startScan(short: false)
         }
     }
 
     func shutdown() {
         xrc_set_frame_callback(nil, nil)
-        menuButtons.removeAll()
+        libraryButtons.removeAll()
         panelButtons.removeAll()
-        menuBuilt = false
-        panelBuilt = false
+        uiBuilt = false
         BeatDemo.shared.deactivate()
         DispatchQueue.main.async {
             self.uiState = .booting
-            self.menuVisible = true
             self.panelVisible = false
             self.vrMode = false
         }
         state = .booting
         vrModeMirror = false
-        menuVisibleMirror = true
         panelMirror = false
     }
 
@@ -127,83 +127,98 @@ final class XRHome: ObservableObject {
         DispatchQueue.main.async { self.uiState = s }
     }
 
-    func startScan() {
+    /// CardboardXR: `short` scans complete as soon as the floor is found;
+    /// full scans (first launch / manual) want floor + walls.
+    func startScan(short: Bool) {
         BeatDemo.shared.deactivate()
+        shortScan = short
         scanStartedAt = CACurrentMediaTime()
         scanDwellOK = 0
         setState(.scanning)
+        SessionLog.log("scan started (\(short ? "short" : "full"))")
     }
 
     func finishScan() {
         core.saveRoomMap { [weak self] ok in
-            DispatchQueue.main.async { self?.roomScanSaved = ok }
+            DispatchQueue.main.async {
+                self?.roomScanSaved = ok
+                SessionLog.log("scan saved: \(ok)")
+            }
         }
         backToHome()
     }
 
     func backToHome() {
         BeatDemo.shared.deactivate()
-        DispatchQueue.main.async { self.menuVisible = true }
-        menuVisibleMirror = true
         setState(.home)
     }
 
     func startDemo() {
         BeatDemo.shared.activate()
         setState(.demo)
+        SessionLog.log("demo started")
+    }
+
+    /// CardboardXR's settings-panel Scan Room toggle: "scans again, or ends
+    /// a scan."
+    func toggleScanRoom() {
+        if state == .scanning {
+            finishScan()
+        } else {
+            startScan(short: false)
+        }
     }
 
     // MARK: - frame callback (render thread)
 
     func frame(_ t: Double) {
-        // Scene lifecycle (begin/end) is owned by XRCore.draw, which invokes
-        // this as the xrc frame callback — we only push items here.
+        let dt = lastPanelT == 0 ? 1.0 / 60.0 : min(max(t - lastPanelT, 0.001), 0.2)
+        lastPanelT = t
+
         switch state {
         case .scanning:
             core.compositor.sceneBackgroundMode = 0 // passthrough always in scan
             drawScan(t)
         case .home:
-            drawMenu(t)
+            core.compositor.sceneBackgroundMode = vrModeMirror ? 2 : 0
+            drawEnvironment()
+            drawLibrary(dt: dt)
             drawSkeletonIfVR()
         case .demo:
-            drawMenu(t)
+            core.compositor.sceneBackgroundMode = vrModeMirror ? 2 : 0
+            drawEnvironment()
             drawSkeletonIfVR()
             BeatDemo.shared.frame(t)
         case .booting:
             core.compositor.sceneBackgroundMode = 1
         }
 
-        let dt = lastPanelT == 0 ? 1.0 / 60.0 : min(max(t - lastPanelT, 0.001), 0.2)
-        lastPanelT = t
-        drawPanel(dt: dt)
         drawPalmIcons()
+        drawSettingsPanel(dt: dt)
         routeInput()
     }
 
-    private func syncBackgroundMode() {
-        // VR Mode -> full 3D environment everywhere; otherwise passthrough
-        // (falling back to dark if the camera feed is unavailable).
-        core.compositor.sceneBackgroundMode = vrModeMirror ? 2 : 0
-    }
-
-    // MARK: - room scan (Quest Space Setup look)
+    // MARK: - room scan (CardboardXR flow)
 
     private func drawScan(_ t: Double) {
         drawScanPlanes()
 
-        // Auto-complete: floor + >= 2 walls held for 0.6 s after 3 s minimum.
         let elapsed = CACurrentMediaTime() - scanStartedAt
         let c = core.planeCounts
-        let ok = c.horizontal >= 1 && c.vertical >= 2
-        if elapsed > 3.0, ok, scanDwellOK == 0 {
+        // Full scan: floor + >= 2 walls held 0.6 s after 3 s minimum.
+        // Short scan (re-entry): floor alone, or 4 s cap.
+        let ok = shortScan ? c.horizontal >= 1 : (c.horizontal >= 1 && c.vertical >= 2)
+        let cap = shortScan ? 4.0 : Double.infinity
+        if elapsed > (shortScan ? 1.0 : 3.0), ok, scanDwellOK == 0 {
             scanDwellOK = CACurrentMediaTime()
         }
+        if elapsed > cap { finishScan() }
         if scanDwellOK > 0, CACurrentMediaTime() - scanDwellOK > 0.6 {
             finishScan()
         }
     }
 
-    /// Quest-style translucent blue grid mesh over detected surfaces.
+    /// Translucent blue grid mesh over detected surfaces (scan visual).
     private func drawScanPlanes() {
         let fill = SIMD4<Float>(0.30, 0.62, 1.00, 0.10)
         let grid = SIMD4<Float>(0.35, 0.68, 1.00, 0.42)
@@ -212,18 +227,16 @@ final class XRHome: ObservableObject {
         let maxInteriorLines = 10
 
         for (anchor, vertical) in core.planeAnchors {
-            let e = anchor.extent                      // x/y = extents, z ≈ 0
+            let e = anchor.extent
             let hx = max(e.x * 0.5, 0.15)
             let hy = max(e.y * 0.5, 0.15)
             let at = anchor.transform
             let color = vertical ? grid : gridFloor
 
-            // translucent fill slab
             var fillArr = XRCMath.floatArray(at * XRCMath.model(
                 translation: anchor.center, scale: SIMD3<Float>(hx * 2, hy * 2, 0.015)))
             xrc_scene_push_box(&fillArr, fill.x, fill.y, fill.z, fill.w)
 
-            // boundary frame
             for (dx, dy, sx, sy) in [(0, hy, hx * 2, 1), (0, -hy, hx * 2, 1),
                                      (hx, 0, 1, hy * 2), (-hx, 0, 1, hy * 2)] as [(Float, Float, Float, Float)] {
                 var line = XRCMath.floatArray(at * XRCMath.model(
@@ -232,7 +245,6 @@ final class XRHome: ObservableObject {
                 xrc_scene_push_box(&line, color.x, color.y, color.z, 0.85)
             }
 
-            // interior grid lines
             let nx = min(Int(hx / lineSpacing), maxInteriorLines / 2)
             let ny = min(Int(hy / lineSpacing), maxInteriorLines / 2)
             for i in 1...max(nx, 1) {
@@ -250,21 +262,49 @@ final class XRHome: ObservableObject {
                 xrc_scene_push_box(&l, color.x, color.y, color.z, color.w)
             }
         }
-
-        if let fy = core.floorY {
-            drawFloorGrid(floorY: fy, color: SIMD4<Float>(0.30, 0.70, 1.00, 0.30))
-        }
     }
 
-    private func drawFloorGrid(floorY: Float, color: SIMD4<Float>) {
-        for i in -6...6 {
-            let x = Float(i) * 0.5
-            var a = XRCMath.floatArray(XRCMath.model(translation: SIMD3<Float>(x, floorY + 0.004, 0),
-                                                     scale: SIMD3<Float>(0.02, 0.02, 6)))
-            xrc_scene_push_box(&a, color.x, color.y, color.z, color.w)
-            var b = XRCMath.floatArray(XRCMath.model(translation: SIMD3<Float>(0, floorY + 0.004, x),
-                                                     scale: SIMD3<Float>(6, 0.02, 0.02)))
-            xrc_scene_push_box(&b, color.x, color.y, color.z, color.w)
+    // MARK: - environment
+
+    /// CardboardXR lobby: checkerboard floor; plus boundary grids drawn ON
+    /// detected surfaces while immersive (their boundaryCm proximity warning).
+    private func drawEnvironment() {
+        guard vrModeMirror else { return }
+        let floor = core.floorY ?? 0
+
+        // checkerboard lobby floor (±2 m, 0.5 m tiles)
+        let light = SIMD4<Float>(0.62, 0.63, 0.66, 0.85)
+        let dark = SIMD4<Float>(0.16, 0.17, 0.20, 0.85)
+        for ix in -4...3 {
+            for iz in -4...3 {
+                let x = (Float(ix) + 0.5) * 0.5
+                let z = (Float(iz) + 0.5) * 0.5
+                let c = (ix + iz) % 2 == 0 ? light : dark
+                var t = XRCMath.floatArray(XRCMath.model(translation: SIMD3<Float>(x, floor + 0.003, z),
+                                                         scale: SIMD3<Float>(0.5, 0.02, 0.5)))
+                xrc_scene_push_box(&t, c.x, c.y, c.z, c.w)
+            }
+        }
+
+        // boundary grids on real surfaces (CardboardXR boundaryCm warning)
+        let bGrid = SIMD4<Float>(0.95, 0.55, 0.20, 0.30)
+        for (anchor, _) in core.planeAnchors {
+            let e = anchor.extent
+            let hx = max(e.x * 0.5, 0.15)
+            let hy = max(e.y * 0.5, 0.15)
+            let at = anchor.transform
+            for i in -1...1 {
+                let fx = hx * Float(i) * 0.6
+                var l1 = XRCMath.floatArray(at * XRCMath.model(
+                    translation: anchor.center + SIMD3<Float>(fx, 0, 0),
+                    scale: SIMD3<Float>(0.012, hy * 2, 0.014)))
+                xrc_scene_push_box(&l1, bGrid.x, bGrid.y, bGrid.z, bGrid.w)
+                let fy = hy * Float(i) * 0.6
+                var l2 = XRCMath.floatArray(at * XRCMath.model(
+                    translation: anchor.center + SIMD3<Float>(0, fy, 0),
+                    scale: SIMD3<Float>(hx * 2, 0.012, 0.014)))
+                xrc_scene_push_box(&l2, bGrid.x, bGrid.y, bGrid.z, bGrid.w)
+            }
         }
     }
 
@@ -280,11 +320,11 @@ final class XRHome: ObservableObject {
             let s = core.handTracker.snapshot(for: Int32(h))
             guard s.isTracked, s.hasJoints, s.joints.count == 21 else { continue }
             for (i, j) in HandTracker.bonePairs {
-                guard let a = s.joints.indices.contains(i) ? s.joints[i] : nil,
-                      let b = s.joints.indices.contains(j) ? s.joints[j] : nil,
-                      simd_length(a - b) > 1e-4 else { continue }
+                let a = s.joints[i]
+                let b = s.joints[j]
+                let len = simd_length(a - b)
+                guard len > 1e-4 else { continue }
                 let dir = normalize(b - a)
-                let len = simd_length(b - a)
                 let m = XRCMath.model(translation: (a + b) * 0.5,
                                       rotation: XRCMath.quatLooking(direction: dir),
                                       scale: SIMD3<Float>(thick, thick, len))
@@ -299,19 +339,33 @@ final class XRHome: ObservableObject {
         }
     }
 
-    // MARK: - floating settings panel (CardboardXR-style palm-summoned UI)
+    // MARK: - palm gesture indicator
 
-    /// Called from the system gestures (palm pinch / both triggers). In
-    /// goggles the 2D pause overlay is unreadable, so this in-VR panel is the
-    /// pause/settings surface; Phone Mode keeps the 2D overlay instead.
-    func togglePanelFromGesture() {
-        panelMirror.toggle()
-        let v = panelMirror
-        DispatchQueue.main.async { self.panelVisible = v }
+    private func drawPalmIcons() {
+        guard state == .home || state == .demo else { return }
+        guard let headPose = core.headPose() else { return }
+        let headPos = headPose.columns.3.xyz
+
+        for h in 0..<Int(XRC_HAND_COUNT) {
+            let s = core.handTracker.snapshot(for: Int32(h))
+            guard s.isTracked, s.hasJoints, s.palmFlat,
+                  s.joints.count == 21 else { continue }
+            let thumbTip = s.joints[4]
+            let indexTip = s.joints[8]
+            let iconPos = (thumbTip + indexTip) * 0.5
+            let towardUser = normalize(headPos - iconPos)
+            let m = XRCMath.model(translation: iconPos + towardUser * 0.03,
+                                  rotation: quatFacing(normal: towardUser),
+                                  scale: SIMD3<Float>(0.055, 0.055, 1))
+            var arr = XRCMath.floatArray(m)
+            xrc_scene_push_panel(&arr, palmIconTexId, 1, 1, 1, 1, 1)
+        }
     }
 
-    private func buildPanelIfNeeded() {
-        guard !panelBuilt else { return }
+    // MARK: - shared panel construction
+
+    private func buildUIIfNeeded() {
+        guard !uiBuilt else { return }
         let device = core.compositor.device
         let orange = UIColor(red: 0.95, green: 0.45, blue: 0.25, alpha: 1)
         let blue = UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1)
@@ -319,35 +373,76 @@ final class XRHome: ObservableObject {
         let red = UIColor(red: 0.9, green: 0.3, blue: 0.35, alpha: 1)
         let purple = UIColor(red: 0.55, green: 0.35, blue: 1.0, alpha: 1)
 
-        func make(_ action: MenuButton.Action, _ title: String, _ status: String = "", _ accent: UIColor) -> MenuButton {
+        func make(_ action: MenuButton.Action, _ title: String, _ status: String = "", _ accent: UIColor,
+                  into list: inout [MenuButton]) {
             let r = PanelTextRenderer(device: device, width: 256, height: 256, style: .button)
             r.render(PanelTextRenderer.Content(title: title, statusLine: status, accent: accent))
             let b = MenuButton(action: action, renderer: r)
             b.texId = core.compositor.registerPanelTexture(r.texture)
-            return b
+            list.append(b)
         }
 
-        // Custom options (iios): environment, game tuning, room, streaming.
-        panelButtons = [
-            make(.goHome, "Home", "", green),
-            make(.startDemo, "Beat Demo", "", orange),
-            make(.toggleVR, "VR Mode", vrModeMirror ? "ON" : "OFF", blue),
-            make(.brightCycle, "Brightness", String(format: "%.1f", settings.ptBrightness), blue),
-            make(.speedCycle, "Speed", String(format: "%.1f", settings.demoSpeed), orange),
-            make(.spawnCycle, "Spawns", String(format: "%.1f", settings.demoSpawnRate), orange),
-            make(.rescanRoom, "Rescan", "", blue),
-            make(.toggleStream, "PC Stream", PCBridge.shared.status.label, blue),
-            make(.launchWindows, "Windows", WindowsHost.shared.status.label, purple),
-            make(.closePanel, "Close", "", red),
-        ]
-        panelBuilt = true
+        // App library (home tiles, CardboardXR lobby): the "apps".
+        make(.startDemo, "Beat Demo", "", orange, into: &libraryButtons)
+        make(.toggleStream, "PC Stream", PCBridge.shared.status.label, blue, into: &libraryButtons)
+        make(.launchWindows, "Windows", WindowsHost.shared.status.label, purple, into: &libraryButtons)
+        make(.rescanRoom, "Scan Room", "", blue, into: &libraryButtons)
+        make(.toggleVR, "VR Mode", "OFF", blue, into: &libraryButtons)
+        make(.exitVR, "Exit", "", red, into: &libraryButtons)
+
+        // Settings panel (palm gear): custom options.
+        make(.toggleVR, "VR Mode", "OFF", blue, into: &panelButtons)
+        make(.brightCycle, "Brightness", String(format: "%.1f", settings.ptBrightness), blue, into: &panelButtons)
+        make(.speedCycle, "Speed", String(format: "%.1f", settings.demoSpeed), orange, into: &panelButtons)
+        make(.spawnCycle, "Spawns", String(format: "%.1f", settings.demoSpawnRate), orange, into: &panelButtons)
+        make(.rescanRoom, "Scan Room", "", green, into: &panelButtons)
+        make(.toggleStream, "PC Stream", PCBridge.shared.status.label, blue, into: &panelButtons)
+        make(.launchWindows, "Windows", WindowsHost.shared.status.label, purple, into: &panelButtons)
+        make(.goHome, "Home", "", green, into: &panelButtons)
+        make(.exitVR, "Exit", "", red, into: &panelButtons)
+        make(.closePanel, "Close", "", red, into: &panelButtons)
+
+        let icon = PanelTextRenderer(device: device, width: 128, height: 128, style: .menuIcon)
+        icon.render(PanelTextRenderer.Content(title: "", accent: orange))
+        palmIconTexId = core.compositor.registerPanelTexture(icon.texture)
+        palmIconRenderer = icon
+
+        let reticle = PanelTextRenderer(device: device, width: 128, height: 128, style: .reticle)
+        reticle.render(PanelTextRenderer.Content(title: "", accent: UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1)))
+        reticleTexId = core.compositor.registerPanelTexture(reticle.texture)
+
+        uiBuilt = true
     }
 
-    /// Lazily-follows the head (CardboardXR behavior): eases toward a point
-    /// in front of the gaze instead of snapping, so it never swims.
-    private func drawPanel(dt: Double) {
-        guard panelMirror else { return }
-        buildPanelIfNeeded()
+    /// Re-renders every button with `action` (panel + library) with a new
+    /// status line. Called from the main thread.
+    private func rerenderStatus(_ action: MenuButton.Action, title: String, status: String, accent: UIColor) {
+        for b in panelButtons + libraryButtons where b.action == action {
+            b.renderer.render(PanelTextRenderer.Content(title: title, statusLine: status, accent: accent))
+        }
+    }
+
+    // MARK: - floating panels (lazy follow)
+
+    private func drawGridPanel(_ buttons: [MenuButton], pos: SIMD3<Float>, facing: simd_quatf,
+                               cols: Int, cell: Float, size: Float) {
+        let right = simd_act(facing, SIMD3<Float>(1, 0, 0))
+        let up = simd_act(facing, SIMD3<Float>(0, 1, 0))
+        let rows = (buttons.count + cols - 1) / cols
+        for (i, b) in buttons.enumerated() {
+            let row = i / cols
+            let col = i % cols
+            let rx = (Float(col) - Float(cols - 1) * 0.5) * cell
+            let ry = (Float(rows) * 0.5 - Float(row) - 0.5) * cell
+            let p = pos + right * rx + up * ry
+            let m = XRCMath.model(translation: p, rotation: facing, scale: SIMD3<Float>(size, size, 1))
+            var arr = XRCMath.floatArray(m)
+            xrc_scene_push_panel(&arr, b.texId, b.hovered ? 1 : 0, 1, 1, 1, 1)
+        }
+    }
+
+    private func drawLibrary(dt: Double) {
+        buildUIIfNeeded()
         guard let headPose = core.headPose() else { return }
         let head = headPose.columns.3.xyz
         var fwd = -headPose.columns.2.xyz
@@ -355,46 +450,68 @@ final class XRHome: ObservableObject {
         if simd_length(fwd) < 0.05 { fwd = SIMD3<Float>(0, 0, -1) }
         fwd = normalize(fwd)
         let floor = core.floorY ?? (head.y - 1.4)
-        let desiredY = max(floor + 0.9, head.y - 0.18)
-        let target = SIMD3<Float>(head.x + fwd.x * 0.62, desiredY, head.z + fwd.z * 0.62)
-        let targetY = desiredY
-
-        // lazy follow (position ease + yaw slerp)
         let alpha = Float(min(1, dt * 9))
-        panelPos += (SIMD3<Float>(target.x, targetY, target.z) - panelPos) * alpha
-        let want = quatFacing(normal: SIMD3<Float>(-fwd.x, -0.12, -fwd.z))
-        panelFacing = simd_slerp(panelFacing, want, alpha)
 
-        // Buttons draw with hover flags set by routeInput() (the unified
-        // gaze/pinch router runs after all draws).
-        let cell: Float = 0.145
-        let size: Float = 0.13
-        let cols = 3
-        let right = simd_act(panelFacing, SIMD3<Float>(1, 0, 0))
-        let up = simd_act(panelFacing, SIMD3<Float>(0, 1, 0))
-        for (i, b) in panelButtons.enumerated() {
+        let targetY = max(floor + 1.0, head.y - 0.1)
+        libPos += (SIMD3<Float>(head.x + fwd.x * 0.66, targetY, head.z + fwd.z * 0.66) - libPos) * alpha
+        libFacing = simd_slerp(libFacing, quatFacing(normal: SIMD3<Float>(-fwd.x, -0.08, -fwd.z)), alpha)
+
+        drawGridPanel(libraryButtons, pos: libPos, facing: libFacing, cols: 2, cell: 0.19, size: 0.17)
+    }
+
+    private func drawSettingsPanel(dt: Double) {
+        guard panelMirror else { return }
+        buildUIIfNeeded()
+        guard let headPose = core.headPose() else { return }
+        let head = headPose.columns.3.xyz
+        var fwd = -headPose.columns.2.xyz
+        fwd.y = 0
+        if simd_length(fwd) < 0.05 { fwd = SIMD3<Float>(0, 0, -1) }
+        fwd = normalize(fwd)
+        let floor = core.floorY ?? (head.y - 1.4)
+        let alpha = Float(min(1, dt * 9))
+
+        let targetY = max(floor + 0.9, head.y - 0.18)
+        panelPos += (SIMD3<Float>(head.x + fwd.x * 0.62, targetY, head.z + fwd.z * 0.62) - panelPos) * alpha
+        panelFacing = simd_slerp(panelFacing, quatFacing(normal: SIMD3<Float>(-fwd.x, -0.12, -fwd.z)), alpha)
+
+        drawGridPanel(panelButtons, pos: panelPos, facing: panelFacing, cols: 3, cell: 0.145, size: 0.13)
+    }
+
+    // MARK: - transforms for raycasts
+
+    private func buttonTransform(_ i: Int, buttons: [MenuButton], layout: ButtonLayout) -> (SIMD3<Float>, simd_quatf, Float) {
+        switch layout {
+        case .panel:
+            let cell: Float = 0.145
+            let cols = 3
             let row = i / cols
             let col = i % cols
             let rx = (Float(col) - Float(cols - 1) * 0.5) * cell
-            let ry = (Float(panelButtons.count / cols) * 0.5 - Float(row) - 0.5) * cell
-            let pos = panelPos + right * rx + up * ry
-            let m = XRCMath.model(translation: pos, rotation: panelFacing,
-                                  scale: SIMD3<Float>(size, size, 1))
-            var arr = XRCMath.floatArray(m)
-            xrc_scene_push_panel(&arr, b.texId, b.hovered ? 1 : 0, 1, 1, 1, 1)
+            let ry = (Float(buttons.count / cols) * 0.5 - Float(row) - 0.5) * cell
+            let pos = panelPos + simd_act(panelFacing, SIMD3<Float>(1, 0, 0)) * rx
+                    + simd_act(panelFacing, SIMD3<Float>(0, 1, 0)) * ry
+            return (pos, panelFacing, 0.065)
+        case .library:
+            let cell: Float = 0.19
+            let cols = 2
+            let row = i / cols
+            let col = i % cols
+            let rx = (Float(col) - Float(cols - 1) * 0.5) * cell
+            let ry = (Float(buttons.count / cols) * 0.5 - Float(row) - 0.5) * cell
+            let pos = libPos + simd_act(libFacing, SIMD3<Float>(1, 0, 0)) * rx
+                    + simd_act(libFacing, SIMD3<Float>(0, 1, 0)) * ry
+            return (pos, libFacing, 0.085)
         }
     }
 
-    /// One ray-vs-buttons pass shared by the panel and the menu bar.
-    private enum ButtonLayout { case panel, bar }
+    private enum ButtonLayout { case panel, library }
+
     private func firstRayHit(_ buttons: [MenuButton], layout: ButtonLayout,
                              origin: SIMD3<Float>, dir: SIMD3<Float>) -> (index: Int, point: SIMD3<Float>)? {
         var best: (Int, Float, SIMD3<Float>)?
-        for (i, b) in buttons.enumerated() {
-            let (pos, facing, half) = layout == .panel
-                ? panelButtonTransform(i, buttons: buttons)
-                : barButtonTransform(i)
-            // facing is a quaternion; the button's plane normal is its +Z axis.
+        for (i, _) in buttons.enumerated() {
+            let (pos, facing, half) = buttonTransform(i, buttons: buttons, layout: layout)
             let normal = simd_act(facing, SIMD3<Float>(0, 0, 1))
             let d = dot(normal, dir)
             guard abs(d) > 1e-4 else { continue }
@@ -410,72 +527,13 @@ final class XRHome: ObservableObject {
         return best.map { (index: $0.0, point: $0.2) }
     }
 
-    private func panelButtonTransform(_ i: Int, buttons: [MenuButton]) -> (SIMD3<Float>, simd_quatf, Float) {
-        let cell: Float = 0.145
-        let cols = 3
-        let row = i / cols
-        let col = i % cols
-        let rx = (Float(col) - Float(cols - 1) * 0.5) * cell
-        let ry = (Float(buttons.count / cols) * 0.5 - Float(row) - 0.5) * cell
-        let pos = panelPos + simd_act(panelFacing, SIMD3<Float>(1, 0, 0)) * rx
-                + simd_act(panelFacing, SIMD3<Float>(0, 1, 0)) * ry
-        return (pos, panelFacing, 0.065)
-    }
-
-    private func barButtonTransform(_ i: Int) -> (SIMD3<Float>, simd_quatf, Float) {
-        guard let headPose = core.headPose() else { return (SIMD3<Float>(0, 0, -1), panelFacing, 0.07) }
-        let head = headPose.columns.3.xyz
-        var fwd = -headPose.columns.2.xyz
-        fwd.y = 0
-        if simd_length(fwd) < 0.05 { fwd = SIMD3<Float>(0, 0, -1) }
-        fwd = normalize(fwd)
-        let floor = core.floorY ?? (head.y - 1.4)
-        let barY = max(floor + 0.55, head.y - 0.34)
-        let right = normalize(SIMD3<Float>(-fwd.z, 0, fwd.x))
-        let spacing: Float = 0.155
-        let center = head + fwd * 0.72
-        var pos = center - right * (spacing * Float(menuButtons.count - 1) * 0.5) + right * (spacing * Float(i))
-        pos.y = barY
-        let facing = quatFacing(normal: SIMD3<Float>((head - pos).x, 0.18, (head - pos).z))
-        return (pos, facing, 0.07)
-    }
-
-    // MARK: - system gesture + menu bar
-
-    private func drawPalmIcons() {
-        guard state == .home || state == .demo else { return }
-        guard let headPose = core.headPose() else { return }
-        let headPos = headPose.columns.3.xyz
-
-        for h in 0..<Int(XRC_HAND_COUNT) {
-            let s = core.handTracker.snapshot(for: Int32(h))
-            guard s.isTracked, s.hasJoints, s.palmFlat,
-                  s.joints.count == 21,
-                  let thumbTip = s.joints.indices.contains(4) ? s.joints[4] : nil,
-                  let indexTip = s.joints.indices.contains(8) ? s.joints[8] : nil else { continue }
-            let iconPos = (thumbTip + indexTip) * 0.5
-            let towardUser = normalize(headPos - iconPos)
-            let m = XRCMath.model(translation: iconPos + towardUser * 0.03,
-                                  rotation: quatFacing(normal: towardUser),
-                                  scale: SIMD3<Float>(0.055, 0.055, 1))
-            var arr = XRCMath.floatArray(m)
-            xrc_scene_push_panel(&arr, palmIconTexId, 1, 1, 1, 1, 1)
-        }
-    }
-
     // MARK: - unified input router (CardboardXR PinchRouter pattern)
     //
     // Priority chain per pinch rising edge:
-    //   1. palm-flat pinch  -> toggle the floating settings panel
+    //   1. palm-flat pinch  -> toggle the settings panel
     //   2. gazed button     -> activate (reticle marks the target)
     //   3. pointer button   -> activate (laser beam from the pointing hand)
     //   4. plain click      -> falls through (demo sabers handle contact)
-    //
-    // Hover: gaze ray first (primary input, like CardboardXR), pointer ray
-    // second. The reticle ring marks the gaze target; the laser only appears
-    // when the pointer hand is the one hovering.
-
-    private var lastRouterPinchDown = [false, false]
 
     private func routeInput() {
         guard state == .home || state == .demo else {
@@ -486,13 +544,12 @@ final class XRHome: ObservableObject {
         let active: (buttons: [MenuButton], layout: ButtonLayout)?
         if panelMirror {
             active = (panelButtons, .panel)
-        } else if menuVisibleMirror, state == .home {
-            active = (menuButtons, .bar)
+        } else if state == .home {
+            active = (libraryButtons, .library)
         } else {
             active = nil
         }
 
-        // --- hover: gaze first, pointer second ---
         var hoverList: [MenuButton]?
         var hover: Int? = nil
         var hitPoint: SIMD3<Float>? = nil
@@ -524,7 +581,6 @@ final class XRHome: ObservableObject {
             if let list = hoverList, let i = hover {
                 list[i].hovered = true
             }
-            // gaze reticle (CardboardXR): ring at the target under the crosshair
             if viaGaze, let hp = hitPoint, let headPose = core.headPose() {
                 let toward = normalize(headPose.columns.3.xyz - hp)
                 let m = XRCMath.model(translation: hp + toward * 0.012,
@@ -535,7 +591,6 @@ final class XRHome: ObservableObject {
             }
         }
 
-        // --- pinch chain ---
         for h in 0..<Int(XRC_HAND_COUNT) {
             let s = core.handTracker.snapshot(for: Int32(h))
             let down = s.isTracked && s.buttons & UInt32(XRC_BTN_TRIGGER) != 0
@@ -543,7 +598,6 @@ final class XRHome: ObservableObject {
             lastRouterPinchDown[h] = down
             guard rising else { continue }
 
-            // 1. palm gear
             if s.palmFlat {
                 lastMenuToggle = CACurrentMediaTime()
                 panelMirror.toggle()
@@ -551,12 +605,10 @@ final class XRHome: ObservableObject {
                 DispatchQueue.main.async { self.panelVisible = v }
                 return
             }
-            // 2/3. gazed or pointed button
             if let list = hoverList, let i = hover {
                 activate(list[i].action)
                 return
             }
-            // 4. plain click falls through (demo contact interaction)
         }
     }
 
@@ -583,81 +635,7 @@ final class XRHome: ObservableObject {
         xrc_scene_push_box(&bArr, 1.0, 0.85, 0.4, 0.9)
     }
 
-    private func buildMenuIfNeeded() {
-        guard !menuBuilt else { return }
-
-        let device = core.compositor.device
-        let orange = UIColor(red: 0.95, green: 0.45, blue: 0.25, alpha: 1)
-        let blue = UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1)
-        let green = UIColor(red: 0.3, green: 0.85, blue: 0.6, alpha: 1)
-        let red = UIColor(red: 0.9, green: 0.3, blue: 0.35, alpha: 1)
-
-        func makeButton(_ action: MenuButton.Action, title: String, status: String = "", accent: UIColor) -> MenuButton {
-            let r = PanelTextRenderer(device: device, width: 256, height: 256, style: .button)
-            r.render(PanelTextRenderer.Content(title: title, statusLine: status, accent: accent))
-            let b = MenuButton(action: action, renderer: r)
-            b.texId = core.compositor.registerPanelTexture(r.texture)
-            return b
-        }
-
-        let home = makeButton(.goHome, title: "Home", accent: green)
-        let demo = makeButton(.startDemo, title: "Beat Demo", accent: orange)
-        let vr = makeButton(.toggleVR, title: "VR Mode", status: "OFF", accent: blue)
-        let pc = makeButton(.toggleStream, title: "PC Stream", status: PCBridge.shared.status.label, accent: blue)
-        let windows = makeButton(.launchWindows, title: "Windows", status: WindowsHost.shared.status.label, accent: UIColor(red: 0.55, green: 0.35, blue: 1.0, alpha: 1))
-        let rescan = makeButton(.rescanRoom, title: "Rescan", accent: blue)
-        let exit = makeButton(.exitVR, title: "Exit", accent: red)
-
-        menuButtons = [home, demo, vr, pc, windows, rescan, exit]
-        vrButtonIndex = 2
-        streamButtonIndex = 3
-        windowsButtonIndex = 4
-
-        let icon = PanelTextRenderer(device: device, width: 128, height: 128, style: .menuIcon)
-        icon.render(PanelTextRenderer.Content(title: "", accent: orange))
-        palmIconTexId = core.compositor.registerPanelTexture(icon.texture)
-        palmIconRenderer = icon
-
-        let reticle = PanelTextRenderer(device: device, width: 128, height: 128, style: .reticle)
-        reticle.render(PanelTextRenderer.Content(title: "", accent: UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1)))
-        reticleTexId = core.compositor.registerPanelTexture(reticle.texture)
-
-        menuBuilt = true
-    }
-
-    /// Menu bar: head-relative each frame so it always stays in view
-    /// (bottom of FOV, like the Quest universal menu).
-    private func drawMenu(_ t: Double) {
-        syncBackgroundMode()
-        buildMenuIfNeeded()
-
-        guard menuVisibleMirror else { return }
-        guard let headPose = core.headPose() else { return }
-        let head = headPose.columns.3.xyz
-        var fwd = -headPose.columns.2.xyz
-        fwd.y = 0
-        if simd_length(fwd) < 0.05 { fwd = SIMD3<Float>(0, 0, -1) }
-        fwd = normalize(fwd)
-        let floor = core.floorY ?? (head.y - 1.4)
-        let barY = max(floor + 0.55, head.y - 0.34)
-
-        let right = normalize(SIMD3<Float>(-fwd.z, 0, fwd.x))
-        let spacing: Float = 0.155
-        let buttonSize: Float = 0.14
-        let center = head + fwd * 0.72
-        let origin = center - right * (spacing * Float(menuButtons.count - 1) * 0.5)
-
-        for (i, button) in menuButtons.enumerated() {
-            var pos = origin + right * (spacing * Float(i))
-            pos.y = barY
-            let towardUser = normalize(head - pos)
-            let facing = quatFacing(normal: SIMD3<Float>(towardUser.x, 0.18, towardUser.z))
-            let scale = button.hovered ? buttonSize * 1.12 : buttonSize
-            let m = XRCMath.model(translation: pos, rotation: facing, scale: SIMD3<Float>(scale, scale, 1))
-            var arr = XRCMath.floatArray(m)
-            xrc_scene_push_panel(&arr, button.texId, button.hovered ? 1 : 0, 1, 1, 1, 1)
-        }
-    }
+    // MARK: - actions
 
     private func activate(_ action: MenuButton.Action) {
         switch action {
@@ -670,33 +648,22 @@ final class XRHome: ObservableObject {
                 self.vrMode.toggle()
                 let v = self.vrMode
                 self.vrModeMirror = v
-                if self.vrButtonIndex >= 0 {
-                    let b = self.menuButtons[self.vrButtonIndex]
-                    b.renderer.render(PanelTextRenderer.Content(
-                        title: "VR Mode", statusLine: v ? "ON" : "OFF",
-                        accent: UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1)))
-                }
+                SessionLog.log("vr mode: \(v ? "on" : "off")")
+                self.rerenderStatus(.toggleVR, title: "VR Mode", status: v ? "ON" : "OFF",
+                                    accent: UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1))
             }
         case .toggleStream:
             DispatchQueue.main.async { PCBridge.shared.toggle() }
-            if streamButtonIndex >= 0 {
-                let b = menuButtons[streamButtonIndex]
-                b.renderer.render(PanelTextRenderer.Content(
-                    title: "PC Stream", statusLine: PCBridge.shared.status.label,
-                    accent: UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1)))
-            }
-        case .rescanRoom:
-            DispatchQueue.main.async { self.startScan() }
+            rerenderStatus(.toggleStream, title: "PC Stream", status: PCBridge.shared.status.label,
+                           accent: UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1))
         case .launchWindows:
             DispatchQueue.main.async {
                 WindowsHost.shared.launch(exePath: self.settings.winExePath)
-                if self.windowsButtonIndex >= 0 {
-                    let b = self.menuButtons[self.windowsButtonIndex]
-                    b.renderer.render(PanelTextRenderer.Content(
-                        title: "Windows", statusLine: WindowsHost.shared.status.label,
-                        accent: UIColor(red: 0.55, green: 0.35, blue: 1.0, alpha: 1)))
-                }
+                self.rerenderStatus(.launchWindows, title: "Windows", status: WindowsHost.shared.status.label,
+                                    accent: UIColor(red: 0.55, green: 0.35, blue: 1.0, alpha: 1))
             }
+        case .rescanRoom:
+            DispatchQueue.main.async { self.toggleScanRoom() }
         case .brightCycle:
             DispatchQueue.main.async {
                 let presets = [0.5, 0.8, 1.0, 1.3]
@@ -732,15 +699,13 @@ final class XRHome: ObservableObject {
     }
 
     private func rerenderPanelButton(_ action: MenuButton.Action, status: String) {
-        guard let b = panelButtons.first(where: { $0.action == action }) else { return }
         let titles: [MenuButton.Action: String] = [
             .brightCycle: "Brightness", .speedCycle: "Speed", .spawnCycle: "Spawns",
         ]
-        b.renderer.render(PanelTextRenderer.Content(
-            title: titles[action] ?? "?", statusLine: status,
-            accent: action == .brightCycle
-                ? UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1)
-                : UIColor(red: 0.95, green: 0.45, blue: 0.25, alpha: 1)))
+        rerenderStatus(action, title: titles[action] ?? "?", status: status,
+                       accent: action == .brightCycle
+                           ? UIColor(red: 0.35, green: 0.55, blue: 1.0, alpha: 1)
+                           : UIColor(red: 0.95, green: 0.45, blue: 0.25, alpha: 1))
     }
 
     /// Rotation with +Z aligned to `normal`, Y-up reference.

@@ -91,13 +91,14 @@ final class HandTracker {
     /// CRITICAL: submissions are coalesced — if the previous Vision pass is
     /// still running, the frame is dropped. Without this, a 20ms Vision pass
     /// at 60fps ARKit arrival grows the queue without bound (the source of a
-    /// memory-exhaustion crash). Vision also runs at half the AR rate.
+    /// memory-exhaustion crash). The update rate follows the handHz launch
+    /// option (60 / n Hz).
     private var visionFrameCounter = 0
 
     func process(frame: ARFrame, settings: XRSettings, completion: @escaping (Double, Double) -> Void) {
-        // Half rate: hand pose at ~30 Hz is plenty (and saves thermal budget).
         visionFrameCounter &+= 1
-        if visionFrameCounter % 2 == 0 { return }
+        let skipEvery = max(60 / max(settings.handHz, 5), 1)
+        if visionFrameCounter % skipEvery != 1 { return }
 
         busyLock.lock()
         if busyFlag {

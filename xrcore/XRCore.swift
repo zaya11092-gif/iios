@@ -198,6 +198,7 @@ final class XRCore: NSObject {
         stats.reset()
         running = true
         paused = false
+        SessionLog.log("session started")
     }
 
     func endSession() {
@@ -208,6 +209,7 @@ final class XRCore: NSObject {
             sessionRunning = false
         }
         attachedView?.isPaused = true
+        SessionLog.log("session ended")
         NotificationCenter.default.post(name: .xrcSessionEnded, object: nil)
     }
 
@@ -381,7 +383,7 @@ extension XRCore: MTKViewDelegate {
 
         // --- predicted head pose (rotational only; timewarp compensates) ---
         let pair = headPosePair()
-        let displayTime = frame.timestamp + 1.0 / 120.0
+        let displayTime = frame.timestamp + settings.predictionMs / 1000.0
         let predictedHead: simd_float4x4
         if settings.timewarp, let pair = pair {
             predictedHead = XRCMath.extrapolate(pair.a, at: pair.ta, pair.b, at: pair.tb, to: displayTime)
