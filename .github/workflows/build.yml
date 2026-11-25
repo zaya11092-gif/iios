@@ -9,6 +9,8 @@ jobs:
   build:
     runs-on: macos-15
     timeout-minutes: 45
+    permissions:
+      contents: write   # publish the .ipa to the rolling dev-build release
     steps:
       - uses: actions/checkout@v4
 
@@ -67,3 +69,19 @@ jobs:
           name: iios-unsigned-ipa
           path: iios-unsigned.ipa
           retention-days: 30
+
+      # Rolling "dev-build" release: every green build replaces it, so
+      # https://github.com/<owner>/iios/releases/tag/dev-build always has the
+      # newest sideloadable .ipa.
+      - name: Publish to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="dev-build"
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" iios-unsigned.ipa \
+            --title "Dev build (${{ github.sha }})" \
+            --notes "Unsigned .ipa from commit ${{ github.sha }} on $(date -u +'%Y-%m-%d %H:%M UTC').
+
+Sign and sideload per docs/SIDELOADING.md." \
+            --prerelease
