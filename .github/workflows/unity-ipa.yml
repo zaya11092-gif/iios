@@ -87,7 +87,7 @@ jobs:
 
       - name: Package unsigned .ipa
         run: |
-          APP=$(find build -path '*Build/Products/Release-iphoneos/*.app' | head -1)
+          APP=$(find build -path '*.xcarchive/Products/Applications/*.app' | head -1)
           echo "Found app bundle: $APP"
           rm -rf Payload
           mkdir Payload
