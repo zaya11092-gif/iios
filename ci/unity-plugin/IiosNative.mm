@@ -67,7 +67,7 @@ void iios_head_pose(double t, ios_pose *out) {
             out->pos[1] = (float)tf.columns[3][1];
             out->pos[2] = (float)tf.columns[3][2];
             simd_float3x3 r3 = simd_matrix(tf.columns[0].xyz, tf.columns[1].xyz, tf.columns[2].xyz);
-            simd_quatf q = simd_quatf(r3);
+            simd_quatf q = simd_quaternion(r3);
             out->quat[0] = q.vector.x;
             out->quat[1] = q.vector.y;
             out->quat[2] = q.vector.z;
