@@ -41,6 +41,23 @@ jobs:
           unzip -q unity-xcode-export.zip -d unity-export
           ls unity-export/iOS/Unity-iPhone.xcodeproj >/dev/null && echo "xcode project found"
 
+      - name: Download steam layer
+        run: |
+          curl -sL -o steam-layer-artifacts.zip \
+            "https://github.com/${{ github.repository }}/releases/download/steam-layer/steam-layer-artifacts.zip"
+          unzip -q steam-layer-artifacts.zip -d steam-layer
+          ls steam-layer/layer/ && echo "steam layer found"
+
+      - name: Inject steam layer into export
+        run: |
+          # Wine PE DLLs + native libs land in the app bundle; Wine's loader
+          # resolves arm64ec-windows/*.dll from the .app root at game launch.
+          mkdir -p unity-export/iOS/Classes/iios/steam-layer
+          cp -R steam-layer/layer/arm64ec-windows unity-export/iOS/Classes/iios/steam-layer/ 2>/dev/null || true
+          cp -R steam-layer/layer/aarch64-windows unity-export/iOS/Classes/iios/steam-layer/ 2>/dev/null || true
+          cp -R steam-layer/layer/vulkan unity-export/iOS/Classes/iios/steam-layer/ 2>/dev/null || true
+          ls unity-export/iOS/Classes/iios/steam-layer/
+
       - name: Compile iios native layer
         run: |
           # Unity's generated pbxproj has a baked-in file list, so the injected
@@ -84,6 +101,17 @@ jobs:
           fi
           echo "== GameAssembly targets in project =="
           xcodebuild -project unity-export/iOS/Unity-iPhone.xcodeproj -list
+
+      - name: Inject SteamVR runtime into archived app
+        run: |
+          # DLLs must be inside the final .app for Wine's loader to find them.
+          APP=$(find build -path '*.xcarchive/Products/Applications/*.app' | head -1)
+          echo "App: $APP"
+          mkdir -p "$APP/steam-layer"
+          cp -R steam-layer/layer/arm64ec-windows/* "$APP/" 2>/dev/null || true
+          cp -R steam-layer/layer "$APP/steam-layer" 2>/dev/null || true
+          ls "$APP" | head -10
+          echo "steam-layer DLLs injected into app bundle"
 
       - name: Package unsigned .ipa
         run: |
