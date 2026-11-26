@@ -18,3 +18,7 @@ Payload/
 # Xcode user state
 xcuserdata/
 *.xcuserstate
+
+# Unity export artifacts (delivered via release assets, never in git)
+unity-xcode-export.zip
+unity-export/

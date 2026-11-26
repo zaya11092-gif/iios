@@ -11,7 +11,16 @@ SRC="unity/CardboardXR/Builds/iOS"
 ZIP="unity-xcode-export.zip"
 echo "zipping $SRC -> $ZIP (this takes a few minutes)…"
 rm -f "$ZIP"
-(cd unity/CardboardXR/Builds && zip -qry "../../$ZIP" iOS)
+python - "$SRC" "$ZIP" <<'EOF'
+import os, sys, zipfile
+src, out = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+    for root, dirs, files in os.walk(src):
+        for f in files:
+            p = os.path.join(root, f)
+            z.write(p, os.path.relpath(p, os.path.dirname(src)))
+print('zip done')
+EOF
 
 TAG="unity-export"
 gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
