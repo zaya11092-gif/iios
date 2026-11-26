@@ -70,7 +70,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
-            OTHER_LDFLAGS='-force_load $(SRCROOT)/Classes/iios/libiiosnative.a'
+            OTHER_LDFLAGS='-force_load $(SRCROOT)/Classes/iios/libiiosnative.a $(BUILT_PRODUCTS_DIR)/il2cpp.a'
 
       - name: Debug link failure
         if: failure()
