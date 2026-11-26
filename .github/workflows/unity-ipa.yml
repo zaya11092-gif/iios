@@ -72,6 +72,19 @@ jobs:
             CODE_SIGN_ENTITLEMENTS="" \
             OTHER_LDFLAGS='-force_load $(SRCROOT)/Classes/iios/libiiosnative.a'
 
+      - name: Debug link failure
+        if: failure()
+        run: |
+          MAP=$(find "$HOME/Library/Developer/Xcode/DerivedData" -name "*UnityFramework-LinkMap*" 2>/dev/null | head -1)
+          if [ -n "$MAP" ]; then
+            echo "== libraries loaded per link map =="
+            grep -oE '\[[0-9]+\][^ ]*\.(a|framework)[^ ]*' "$MAP" | sort -u | head -20
+            echo "== archive candidates on disk =="
+            find "$HOME/Library/Developer/Xcode/DerivedData" \( -name "libGameAssembly.a" -o -name "il2cpp.a" \) -exec ls -la {} \; -exec sh -c 'nm -g "$1" 2>/dev/null | grep -c "_il2cpp_array_new" || echo 0' _ {} \;
+          fi
+          echo "== GameAssembly targets in project =="
+          xcodebuild -project unity-export/iOS/Unity-iPhone.xcodeproj -list
+
       - name: Package unsigned .ipa
         run: |
           APP=$(find build -path '*Build/Products/Release-iphoneos/*.app' | head -1)
