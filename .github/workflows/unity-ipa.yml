@@ -41,10 +41,26 @@ jobs:
           unzip -q unity-xcode-export.zip -d unity-export
           ls unity-export/iOS/Unity-iPhone.xcodeproj >/dev/null && echo "xcode project found"
 
+      - name: Compile iios native layer
+        run: |
+          # Unity's generated pbxproj has a baked-in file list, so the injected
+          # IiosNative.mm isn't compiled by the project itself. Build it as a
+          # static lib and force_load it at link time via OTHER_LDFLAGS.
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          clang++ -c -arch arm64 \
+            -isysroot "$SDK" \
+            -miphoneos-version-min=15.0 \
+            -I unity-export/iOS/Classes \
+            -I windows/host-bridge \
+            unity-export/iOS/Classes/iios/IiosNative.mm \
+            -o unity-export/iOS/Classes/iios/libiiosnative.a
+          ls -la unity-export/iOS/Classes/iios/
+
       - name: Build archive (unsigned)
         run: |
           xcodebuild \
             -project unity-export/iOS/Unity-iPhone.xcodeproj \
+            OTHER_LDFLAGS='-force_load $(SRCROOT)/Classes/iios/libiiosnative.a' \
             -scheme Unity-iPhone \
             -configuration Release \
             -destination 'generic/platform=iOS' \
