@@ -1,0 +1,83 @@
+name: unity-ipa
+
+# Compiles the CardboardXR iOS Xcode project (exported from Windows Unity via
+# unity/CardboardXR/Tools/ios_build_and_run.sh, zipped and released here) into
+# an unsigned .ipa on macOS. Workflow dispatch — triggers manually after a new
+# unity-export asset lands.
+on:
+  workflow_dispatch:
+    inputs:
+      export_url:
+        description: "URL of the unity-xcode-export.zip release asset (optional; latest unity-export release used if omitted)"
+        required: false
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find export asset
+        id: asset
+        run: |
+          TAG="unity-export"
+          URL="${{ github.event.inputs.export_url }}"
+          if [ -z "$URL" ]; then
+            ASSET_ID=$(gh api repos/${{ github.repository }}/releases/tags/$TAG \
+              --jq '.assets[] | select(.name=="unity-xcode-export.zip") | .id' 2>/dev/null || true)
+            if [ -z "$ASSET_ID" ]; then echo "no unity-xcode-export.zip asset on tag unity-export"; exit 1; fi
+            URL="https://github.com/${{ github.repository }}/releases/download/$TAG/unity-xcode-export.zip"
+          fi
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Download Xcode export
+        run: |
+          curl -L -o unity-xcode-export.zip "${{ steps.asset.outputs.url }}"
+          unzip -q unity-xcode-export.zip -d unity-export
+          ls unity-export/Builds/iOS/Unity-iPhone.xcodeproj >/dev/null && echo "xcode project found"
+
+      - name: Build archive (unsigned)
+        run: |
+          xcodebuild \
+            -project unity-export/Builds/iOS/Unity-iPhone.xcodeproj \
+            -scheme Unity-iPhone \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/iOS.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS=""
+
+      - name: Package unsigned .ipa
+        run: |
+          APP=$(find build -path '*Build/Products/Release-iphoneos/*.app' | head -1)
+          echo "Found app bundle: $APP"
+          rm -rf Payload
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry cardboardxr-unsigned.ipa Payload
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cardboardxr-unsigned-ipa
+          path: cardboardxr-unsigned.ipa
+          retention-days: 30
+
+      # Rolling "cardboardxr" release: latest CardboardXR+iios export.
+      - name: Publish to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="cardboardxr"
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" cardboardxr-unsigned.ipa \
+            --title "CardboardXR + iios export ($(date -u +'%Y-%m-%d %H:%M UTC'))" \
+            --notes "CardboardXR (brenpoly/CardboardXR @ unity/CardboardXR) iOS Xcode export,
+            compiled unsigned on macOS. SteamVR/FEX/Wine/DXMT layer per docs/UNITY-STEAMVR.md.
+            Sign + sideload per docs/SIDELOADING.md." \
+            --prerelease

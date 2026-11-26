@@ -1,0 +1,15 @@
+diff --git a/Packages/manifest.json b/Packages/manifest.json
+index f431d6c..19d68d3 100644
+--- a/Packages/manifest.json
++++ b/Packages/manifest.json
+@@ -52,6 +52,7 @@
+     "com.unity.modules.vehicles": "1.0.0",
+     "com.unity.modules.video": "1.0.0",
+     "com.unity.modules.wind": "1.0.0",
+-    "com.unity.modules.xr": "1.0.0"
++    "com.unity.modules.xr": "1.0.0",
++    "com.unity.xr.openxr": "1.14.3"
+   }
+-}
++}
+\ No newline at end of file
