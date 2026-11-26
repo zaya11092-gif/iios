@@ -16,3 +16,6 @@
 [submodule "unity/CardboardXR"]
 	path = unity/CardboardXR
 	url = https://github.com/brenpoly/CardboardXR.git
+[submodule "steam/madeira"]
+	path = steam/madeira
+	url = https://github.com/willfaust/madeira.git

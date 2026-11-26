@@ -1,0 +1,69 @@
+name: steam-layer
+
+# Builds the on-device Windows layer (FEX + Wine ARM64EC + DXMT) using
+# Madeira's own build orchestrator (steam/madeira, GPL-3.0 — its pinned forks
+# of FEX/Wine/DXMT are the same ones vendored under windows/vendor).
+# Result: arm64ec-windows/*.dll + native .a libraries, published to the
+# steam-layer release, ready to inject into the exported Xcode project
+# (docs/UNITY-STEAMVR.md).
+on:
+  workflow_dispatch:
+
+jobs:
+  build-layer:
+    runs-on: macos-15
+    timeout-minutes: 350   # GH macOS cap
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # steam/madeira + its FEX/wine/dxmt pins
+
+      - name: Install prerequisites
+        run: |
+          brew install bison ninja meson pkg-config python3
+          echo "$(brew --prefix bison)/bin" >> $GITHUB_PATH
+
+      - name: Install pinned llvm-mingw toolchain
+        run: |
+          mkdir -p steam/madeira/toolchains
+          curl -sL -o /tmp/llvm-mingw.tar.xz \
+            https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-macos-universal.tar.xz
+          echo "bd85a3975723815cef28dbbd2ca2cb0c926f6b348a12a0453f39f7af273cb3f7  /tmp/llvm-mingw.tar.xz" | shasum -a 256 --check
+          tar -xJf /tmp/llvm-mingw.tar.xz -C steam/madeira/toolchains/
+          ls steam/madeira/toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin | head -3
+
+      - name: Build Windows runtime (FEX + Wine + DXMT)
+        run: |
+          cd steam/madeira
+          JOBS="$(sysctl -n hw.ncpu)" bash build/windows-runtime/build.sh 2>&1 | tail -200
+
+      - name: Package layer artifacts
+        run: |
+          mkdir -p layer
+          for d in arm64ec-windows aarch64-windows vulkan; do
+            [ -d "steam/madeira/app/Madeira/$d" ] && cp -R "steam/madeira/app/Madeira/$d" layer/
+          done
+          cp steam/madeira/app/Madeira/*.a layer/ 2>/dev/null || true
+          ls layer/
+          zip -qry steam-layer-artifacts.zip layer
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-layer
+          path: steam-layer-artifacts.zip
+          retention-days: 30
+
+      - name: Publish to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete steam-layer --yes --cleanup-tag 2>/dev/null || true
+          gh release create steam-layer steam-layer-artifacts.zip \
+            --title "Steam layer — FEX + Wine ARM64EC + DXMT ($(date -u +'%Y-%m-%d %H:%M UTC'))" \
+            --notes "Windows runtime DLLs + native libs built from Madeira's pinned forks
+            (FEX ios-port-2607, Wine madeira-lgpl, DXMT ios-port). Injection into the
+            exported CardboardXR Xcode project per docs/UNITY-STEAMVR.md." \
+            --prerelease
