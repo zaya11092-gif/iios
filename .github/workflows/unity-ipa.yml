@@ -37,14 +37,14 @@ jobs:
 
       - name: Download Xcode export
         run: |
-          curl -L -o unity-xcode-export.zip "${{ steps.asset.outputs.url }}"
+          curl -sL -o unity-xcode-export.zip "${{ steps.asset.outputs.url }}"
           unzip -q unity-xcode-export.zip -d unity-export
-          ls unity-export/Builds/iOS/Unity-iPhone.xcodeproj >/dev/null && echo "xcode project found"
+          ls unity-export/iOS/Unity-iPhone.xcodeproj >/dev/null && echo "xcode project found"
 
       - name: Build archive (unsigned)
         run: |
           xcodebuild \
-            -project unity-export/Builds/iOS/Unity-iPhone.xcodeproj \
+            -project unity-export/iOS/Unity-iPhone.xcodeproj \
             -scheme Unity-iPhone \
             -configuration Release \
             -destination 'generic/platform=iOS' \
