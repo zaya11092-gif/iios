@@ -106,8 +106,6 @@ int32_t iios_is_tracked(void) {
     return g_session != nil ? 1 : 0;
 }
 
-} // extern "C"
-
 // ---- SteamVR backend (toolbar button) ----
 
 void iios_launch_steamvr(void) {
