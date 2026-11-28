@@ -15,6 +15,8 @@
 
 static ARSession *g_session = nil;
 static NSObject *g_lock = nil;
+static BOOL g_steamvrActive = NO;
+static BOOL g_steamvrLaunching = NO;
 
 // Host vtable (Swift side). Absent in the pure-Unity build → fallback path.
 static ios_host_vtable *g_host = nil;
@@ -102,6 +104,39 @@ int32_t iios_submit_frame(double displayTime) {
 
 int32_t iios_is_tracked(void) {
     return g_session != nil ? 1 : 0;
+}
+
+} // extern "C"
+
+// ---- SteamVR backend (toolbar button) ----
+
+void iios_launch_steamvr(void) {
+    @synchronized (g_lock) {
+        if (g_steamvrActive || g_steamvrLaunching) return;
+        g_steamvrLaunching = YES;
+    }
+    // IOS_LAYER_TODO: exec Steam through Wine with the bundled arm64ec DLLs
+    // (steam-layer/arm64ec-windows in the app bundle). The OpenXR shim then
+    // reports a session and submit_frame starts delivering eye textures.
+    // Until the layer is linked, flip active so the shell switches views and
+    // shows the "connecting" state.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @synchronized (g_lock) {
+            g_steamvrLaunching = NO;
+            g_steamvrActive = YES;
+        }
+    });
+}
+
+int32_t iios_steamvr_active(void) {
+    return g_steamvrActive ? 1 : 0;
+}
+
+void iios_steamvr_stop(void) {
+    @synchronized (g_lock) {
+        g_steamvrActive = NO;
+        g_steamvrLaunching = NO;
+    }
 }
 
 } // extern "C"
